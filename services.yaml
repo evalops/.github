@@ -1,0 +1,645 @@
+# EvalOps Service Catalog
+# Source of truth for service ownership, runtime tier, and topology.
+# Updated manually or via automation when new services are created.
+
+services:
+
+  # ──────────────────────────────────────────────
+  # Critical tier — core platform, must be up
+  # ──────────────────────────────────────────────
+
+  identity:
+    description: "EvalOps identity and access plane"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/identity
+
+  governance:
+    description: "Safety policies, PII, and data retention"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/governance
+
+  audit:
+    description: "Tamper-evident event ingestion"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/audit
+
+  approvals:
+    description: "Cross-surface action governance"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/approvals
+
+  gate:
+    description: "Multi-protocol privileged access proxy"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/gate
+
+  llm-gateway:
+    description: "Managed LLM gateway"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/llm-gateway
+
+  keys:
+    description: "Provider credential vault"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/keys
+
+  # ──────────────────────────────────────────────
+  # Standard tier — important but not critical path
+  # ──────────────────────────────────────────────
+
+  meter:
+    description: "Usage metering and cost attribution"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/meter
+
+  memory:
+    description: "Shared context and memory service"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/memory
+
+  registry:
+    description: "Agent registry and capability mesh"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/registry
+
+  traces:
+    description: "Agent execution tracing"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/traces
+
+  objectives:
+    description: "Durable work tracking"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/objectives
+
+  prompts:
+    description: "Prompt registry"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/prompts
+
+  skills:
+    description: "Skill registry"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/skills
+
+  connectors:
+    description: "Integration lifecycle and OAuth"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/connectors
+
+  notifications:
+    description: "Multi-channel delivery routing"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/notifications
+
+  entities:
+    description: "Cross-system identity correlation"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/entities
+
+  compliance:
+    description: "Compliance evidence generator"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/compliance
+
+  attribution:
+    description: "Revenue attribution"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/attribution
+
+  pipeline:
+    description: "Internal CRM and revenue pipeline"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/pipeline
+
+  parker:
+    description: "Internal HRIS"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/parker
+
+  asb:
+    description: "Agents-first secret broker"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/asb
+
+  agent-mcp:
+    description: "Unified MCP server for external agents"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [proto, service-runtime]
+    proto_consumer: true
+    repo: evalops/agent-mcp
+
+  siphon:
+    description: "Webhook ingestion into NATS and ClickHouse"
+    team: platform-team
+    language: go
+    tier: standard
+    runtime: gke
+    depends_on: [service-runtime]
+    proto_consumer: true
+    repo: evalops/siphon
+
+  # ──────────────────────────────────────────────
+  # Products — frontend-team
+  # ──────────────────────────────────────────────
+
+  console:
+    description: "Fleet dashboard"
+    team: frontend-team
+    language: typescript
+    tier: critical
+    runtime: gke
+    repo: evalops/console
+
+  admin:
+    description: "Internal ops control plane"
+    team: frontend-team
+    language: typescript
+    tier: standard
+    runtime: gke
+    repo: evalops/admin
+
+  maestro:
+    description: "Multi-model coding agent (public)"
+    team: frontend-team
+    language: typescript
+    tier: critical
+    runtime: gke
+    repo: evalops/maestro
+
+  maestro-internal:
+    description: "Agentic coding assistant (internal)"
+    team: frontend-team
+    language: typescript
+    tier: critical
+    runtime: gke
+    repo: evalops/maestro-internal
+
+  chat:
+    description: "AI chat platform"
+    team: frontend-team
+    language: typescript
+    tier: standard
+    runtime: gke
+    repo: evalops/chat
+
+  ensemble:
+    description: "Open-source AI operating system"
+    team: frontend-team
+    language: typescript
+    tier: standard
+    runtime: gke
+    repo: evalops/ensemble
+
+  # ──────────────────────────────────────────────
+  # Shared infrastructure — libraries and contracts
+  # ──────────────────────────────────────────────
+
+  proto:
+    description: "Canonical protobuf definitions"
+    team: api-team
+    language: typescript
+    tier: critical
+    runtime: none
+    repo: evalops/proto
+
+  service-runtime:
+    description: "Shared Go runtime helpers"
+    team: platform-team
+    language: go
+    tier: critical
+    runtime: none
+    repo: evalops/service-runtime
+
+  deploy:
+    description: "GitOps delivery (K8s, Terraform, ArgoCD)"
+    team: sre-team
+    language: hcl
+    tier: critical
+    runtime: none
+    repo: evalops/deploy
+
+  # ──────────────────────────────────────────────
+  # Data
+  # ──────────────────────────────────────────────
+
+  dagster-user-code:
+    description: "Data pipelines"
+    team: data-team
+    language: typescript
+    tier: standard
+    runtime: gke
+    repo: evalops/dagster-user-code
+
+  fermata:
+    description: "LLM evaluation platform"
+    team: qa-team
+    language: python
+    tier: standard
+    runtime: gke
+    repo: evalops/fermata
+
+  cerebro:
+    description: "Entity intelligence engine"
+    team: security-team
+    language: go
+    tier: standard
+    runtime: gke
+    repo: evalops/cerebro
+
+  # ──────────────────────────────────────────────
+  # Experimental and tools
+  # ──────────────────────────────────────────────
+
+  hopper:
+    description: "Marketing site"
+    team: frontend-team
+    language: typescript
+    tier: experimental
+    runtime: standalone
+    repo: evalops/hopper
+
+  lark:
+    description: "macOS desktop client for Claude"
+    team: frontend-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/lark
+
+  mocktopus:
+    description: "Mock LLM APIs for testing"
+    team: qa-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/mocktopus
+
+  mcp-firewall:
+    description: "MCP JSON-RPC firewall"
+    team: security-team
+    language: go
+    tier: experimental
+    runtime: none
+    repo: evalops/mcp-firewall
+
+  mcp-openapi:
+    description: "OpenAPI to MCP bridge"
+    team: platform-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/mcp-openapi
+
+  agent-harness:
+    description: "Unified agent SDK harness"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/agent-harness
+
+  nimbus:
+    description: "Self-hosted CI for evals"
+    team: sre-team
+    language: python
+    tier: experimental
+    runtime: standalone
+    repo: evalops/nimbus
+
+  explorer:
+    description: "Protobuf schema explorer"
+    team: api-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/explorer
+
+  docs:
+    description: "Prospect and internal docs"
+    team: docs-team
+    language: tex
+    tier: experimental
+    runtime: none
+    repo: evalops/docs
+
+  diagrams:
+    description: "Architecture diagrams"
+    team: docs-team
+    language: none
+    tier: experimental
+    runtime: none
+    repo: evalops/diagrams
+
+  deliberate-reasoning-engine:
+    description: "Structured reasoning MCP"
+    team: platform-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/deliberate-reasoning-engine
+
+  shared-memory-mcp:
+    description: "Shared memory MCP server"
+    team: platform-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/shared-memory-mcp
+
+  keep:
+    description: "PoC zero-trust access stack"
+    team: security-team
+    language: go
+    tier: experimental
+    runtime: none
+    repo: evalops/keep
+
+  fabric:
+    description: "Agent Slack reimagining"
+    team: frontend-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/fabric
+
+  cadence:
+    description: "AI-native workspace"
+    team: frontend-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/cadence
+
+  conductor:
+    description: "AI web companion"
+    team: frontend-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/conductor
+
+  diffscope:
+    description: "Code review engine"
+    team: platform-team
+    language: rust
+    tier: experimental
+    runtime: none
+    repo: evalops/diffscope
+
+  diffscope-web-poc:
+    description: "Diffscope web frontend"
+    team: frontend-team
+    language: javascript
+    tier: experimental
+    runtime: none
+    repo: evalops/diffscope-web-poc
+
+  cerebro-frontend:
+    description: "Cerebro dashboard"
+    team: frontend-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/cerebro-frontend
+
+  garak-skill:
+    description: "LLM vulnerability scanner skill"
+    team: security-team
+    language: none
+    tier: experimental
+    runtime: none
+    repo: evalops/garak-skill
+
+  gemini-exfil-detector:
+    description: "Insider threat detection"
+    team: security-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/gemini-exfil-detector
+
+  dspy-micro-agent:
+    description: "Minimal DSPy agent"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/dspy-micro-agent
+
+  orbit-agent:
+    description: "Startup advisor agent"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/orbit-agent
+
+  dspy-0to1-guide:
+    description: "DSPy guide"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/dspy-0to1-guide
+
+  cognitive-dissonance-dspy:
+    description: "Multi-agent dissonance detection"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/cognitive-dissonance-dspy
+
+  founder-email-optimizer:
+    description: "Email optimization"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/founder-email-optimizer
+
+  dspy-advanced-prompting:
+    description: "Advanced prompting techniques"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/dspy-advanced-prompting
+
+  folie-a-deux-dspy:
+    description: "LLM agreement training"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/folie-a-deux-dspy
+
+  eval2otel:
+    description: "Eval results to OTel converter"
+    team: platform-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/eval2otel
+
+  gam-workspace-config:
+    description: "Google Workspace config"
+    team: sre-team
+    language: shell
+    tier: experimental
+    runtime: none
+    repo: evalops/gam-workspace-config
+
+  bandit-dspy:
+    description: "Security-aware LLM dev"
+    team: security-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/bandit-dspy
+
+  override-cascade-dspy:
+    description: "Safety override cascade detection"
+    team: security-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/override-cascade-dspy
+
+  agent-pm:
+    description: "AI product management orchestrator"
+    team: platform-team
+    language: python
+    tier: experimental
+    runtime: none
+    repo: evalops/agent-pm
+
+  openclaw-safety-harness:
+    description: "Safety harness plugin"
+    team: security-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/openclaw-safety-harness
+
+  deep-code-reasoning-mcp:
+    description: "Code analysis MCP server"
+    team: platform-team
+    language: typescript
+    tier: experimental
+    runtime: none
+    repo: evalops/deep-code-reasoning-mcp
