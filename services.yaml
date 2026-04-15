@@ -248,7 +248,7 @@ services:
     language: go
     tier: standard
     runtime: gke
-    depends_on: [service-runtime]
+    depends_on: [proto, service-runtime]
     proto_consumer: true
     repo: evalops/siphon
 
@@ -339,7 +339,7 @@ services:
   dagster-user-code:
     description: "Data pipelines"
     team: data-team
-    language: typescript
+    language: python
     tier: standard
     runtime: gke
     repo: evalops/dagster-user-code
