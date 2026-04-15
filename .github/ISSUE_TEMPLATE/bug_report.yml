@@ -1,0 +1,34 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug", "triage"]
+body:
+  - type: input
+    id: service
+    attributes:
+      label: Service / Repo
+      description: Which service is affected?
+      placeholder: e.g. identity, governance, console
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this?
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Staging, production, local?
+      placeholder: e.g. production, staging
+    validations:
+      required: false
