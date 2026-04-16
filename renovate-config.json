@@ -1,0 +1,84 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Shared Renovate policy for EvalOps repositories.",
+  "extends": [
+    "config:recommended",
+    ":configMigration",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests",
+    "helpers:githubDigestChangelogs",
+    "helpers:goXPackagesChangelogLink",
+    "helpers:goXPackagesNameLink"
+  ],
+  "timezone": "UTC",
+  "schedule": ["* 0-5 * * 1"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "minimumReleaseAge": "3 days",
+  "vulnerabilityAlerts": {
+    "labels": ["dependencies", "security"],
+    "minimumReleaseAge": null,
+    "prCreation": "immediate",
+    "schedule": [],
+    "vulnerabilityFixStrategy": "lowest"
+  },
+  "packageRules": [
+    {
+      "description": "Require explicit approval for major updates.",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "addLabels": ["major"]
+    },
+    {
+      "description": "Automerge patch and digest maintenance after CI passes.",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Batch non-major third-party Go module updates.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["*", "!github.com/evalops/**"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "third-party Go modules",
+      "groupSlug": "third-party-go",
+      "addLabels": ["go"]
+    },
+    {
+      "description": "Keep internal EvalOps Go module updates separate from third-party Go dependencies.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/evalops/**"],
+      "groupName": "evalops internal Go modules",
+      "groupSlug": "evalops-go",
+      "addLabels": ["go", "internal"]
+    },
+    {
+      "description": "Track service-runtime bumps in their own PR for easier rollout review.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": [
+        "github.com/evalops/service-runtime",
+        "github.com/evalops/service-runtime/**"
+      ],
+      "groupName": "service-runtime",
+      "groupSlug": "service-runtime",
+      "addLabels": ["go", "internal", "service-runtime"]
+    },
+    {
+      "description": "Batch Terraform provider, module, and lockfile maintenance.",
+      "matchManagers": ["terraform", "terraform-version", "terragrunt", "terragrunt-version"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "Terraform dependencies",
+      "groupSlug": "terraform",
+      "addLabels": ["terraform"]
+    },
+    {
+      "description": "Batch GitHub Actions updates while pinning action digests.",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "groupSlug": "github-actions",
+      "addLabels": ["github-actions"]
+    }
+  ]
+}
