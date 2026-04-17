@@ -76,6 +76,7 @@
     {
       "description": "Batch GitHub Actions updates while pinning action digests.",
       "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
       "groupName": "GitHub Actions",
       "groupSlug": "github-actions",
       "addLabels": ["github-actions"]
