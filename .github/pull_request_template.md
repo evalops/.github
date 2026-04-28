@@ -32,6 +32,7 @@ Commands and evidence:
 ## Agent / Automation Notes
 
 - [ ] This PR was agent-authored or agent-assisted
+- [ ] Maestro-authored commits include the required authorship trailers
 - [ ] I checked live GitHub state before publishing
 - [ ] Review feedback and failing checks have been rechecked
 - [ ] No local secrets, generated scratch artifacts, or unrelated worktree changes are included

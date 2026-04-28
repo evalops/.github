@@ -1,0 +1,9 @@
+{
+  "name": "Agent authorship labels",
+  "description": "Apply agent-authored, human-authored, or mixed-authorship labels to pull requests based on Maestro commit trailers.",
+  "iconName": "octicon tag",
+  "categories": [
+    "Automation",
+    "Code review"
+  ]
+}

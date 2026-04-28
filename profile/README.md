@@ -2,6 +2,10 @@
 
 The organizational operating system for AI agent workforces — evaluation, governance, and observability for shipping accountable AI.
 
+## Operating Conventions
+
+- [Agent authorship attribution](AGENT_AUTHORSHIP.md) — git trailers, PR labels, and audit indexing for Maestro-authored code.
+
 ## Platform Services
 
 Discover repos by topic:
