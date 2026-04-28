@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: blacksmith-4vcpu-ubuntu-2404
+      helper_ref:
+        description: "evalops/.github ref used to checkout helper scripts"
+        required: false
+        type: string
+        default: main
 
 permissions:
   contents: read
@@ -27,7 +32,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: evalops/.github
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ inputs.helper_ref }}
           path: org-defaults
 
       - name: Resolve pull request
