@@ -69,17 +69,47 @@ jobs:
             local name="$1"
             local color="$2"
             local description="$3"
+            local label_json
+            label_json="$(gh api "repos/${GITHUB_REPOSITORY}/labels/${name}" 2>/dev/null || true)"
 
-            if gh api "repos/${GITHUB_REPOSITORY}/labels/${name}" >/dev/null 2>&1; then
+            if [ -n "${label_json}" ]; then
+              local existing_color
+              local existing_description
+              existing_color="$(jq -r '.color // ""' <<<"${label_json}")"
+              existing_description="$(jq -r '.description // ""' <<<"${label_json}")"
+
+              if [ "${existing_color}" != "${color}" ] || [ "${existing_description}" != "${description}" ]; then
+                gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${name}" \
+                  -f color="${color}" \
+                  -f description="${description}" >/dev/null
+              fi
+              return 0
+            fi
+
+            local stderr_file
+            stderr_file="$(mktemp)"
+
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/labels" \
+              -f name="${name}" \
+              -f color="${color}" \
+              -f description="${description}" >/dev/null 2>"${stderr_file}"; then
+              rm -f "${stderr_file}"
+              return 0
+            fi
+
+            local status=$?
+            if grep -qiE '(already.?exists|already_exists|Validation Failed)' "${stderr_file}"; then
+              echo "Label ${name} was created concurrently; updating metadata if needed."
+              rm -f "${stderr_file}"
               gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${name}" \
                 -f color="${color}" \
                 -f description="${description}" >/dev/null
-            else
-              gh api --method POST "repos/${GITHUB_REPOSITORY}/labels" \
-                -f name="${name}" \
-                -f color="${color}" \
-                -f description="${description}" >/dev/null
+              return 0
             fi
+
+            cat "${stderr_file}" >&2
+            rm -f "${stderr_file}"
+            return "${status}"
           }
 
           ensure_label "agent-authored" "6f42c1" "All PR commits carry explicit Maestro authorship trailers"
