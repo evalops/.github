@@ -5,6 +5,7 @@ on:
     paths:
       - "AGENTS.md"
       - "**/AGENTS.md"
+      - "README.md"
       - ".agents/skills/**"
       - ".github/scripts/**"
       - ".github/ISSUE_TEMPLATE/**"
@@ -12,6 +13,7 @@ on:
       - ".github/workflows/**"
       - ".github/workflow-templates/**"
       - "profile/**"
+      - "services.yaml"
       - "test/**"
   workflow_call:
     inputs:
@@ -140,6 +142,22 @@ jobs:
             ' "${skill}"
           done
 
+      - name: Validate service catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f services.yaml ]; then
+            echo "No services.yaml found."
+            exit 0
+          fi
+
+          if [ ! -f .github/scripts/validate-services-catalog.rb ]; then
+            echo "::error::.github/scripts/validate-services-catalog.rb is required when services.yaml exists."
+            exit 1
+          fi
+
+          ruby .github/scripts/validate-services-catalog.rb services.yaml
+
       - name: Run repo Ruby tests
         shell: bash
         run: |
@@ -151,4 +169,4 @@ jobs:
             exit 0
           fi
 
-          ruby -Itest "${tests[@]}"
+          ruby -Itest -e 'ARGV.each { |path| require "./#{path}" }' "${tests[@]}"

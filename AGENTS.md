@@ -14,4 +14,6 @@ This repository provides org-level defaults for EvalOps repositories: default is
 
 - Validate YAML syntax for files under `.github/ISSUE_TEMPLATE/`.
 - Inspect rendered Markdown for `.github/pull_request_template.md`.
+- Run `ruby .github/scripts/validate-services-catalog.rb services.yaml` when touching the service catalog or catalog validation.
+- Run `ruby -Itest -e 'ARGV.each { |path| require "./#{path}" }' test/*_test.rb` when touching helper scripts or validation rails.
 - For default-template changes, create a PR and let repository maintainers review whether the org-wide wording is too broad.
