@@ -1,0 +1,83 @@
+name: codex-rails-check
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - ".agents/skills/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+      - ".github/workflows/codex-rails-check.yml"
+  workflow_call:
+    inputs:
+      require_agents:
+        description: "Fail when the repository does not have AGENTS.md"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate issue template YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/ISSUE_TEMPLATE/*.yml .github/ISSUE_TEMPLATE/*.yaml)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No issue template YAML files found."
+            exit 0
+          fi
+          ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' "${files[@]}"
+
+      - name: Check AGENTS.md presence
+        shell: bash
+        env:
+          REQUIRE_AGENTS: ${{ inputs.require_agents || false }}
+        run: |
+          set -euo pipefail
+          if [ "${REQUIRE_AGENTS}" = "true" ] && [ ! -f AGENTS.md ]; then
+            echo "::error::AGENTS.md is required for this repository."
+            exit 1
+          fi
+          if [ -f AGENTS.md ]; then
+            test -s AGENTS.md || { echo "::error::AGENTS.md is empty"; exit 1; }
+          fi
+
+      - name: Validate skill frontmatter
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          skills=(.agents/skills/**/SKILL.md)
+          if [ "${#skills[@]}" -eq 0 ]; then
+            echo "No repo skills found."
+            exit 0
+          fi
+
+          for skill in "${skills[@]}"; do
+            echo "checking ${skill}"
+            ruby -e '
+              path = ARGV.fetch(0)
+              text = File.read(path)
+              unless text.start_with?("---\n")
+                warn "#{path}: missing YAML frontmatter"
+                exit 1
+              end
+              _, yaml, = text.split(/^---\s*$/, 3)
+              require "yaml"
+              data = YAML.safe_load(yaml)
+              unless data.is_a?(Hash) && data["name"].to_s.match?(/\A[a-z0-9][a-z0-9_-]*\z/)
+                warn "#{path}: frontmatter must include kebab/snake-safe name"
+                exit 1
+              end
+              unless data["description"].to_s.strip.length >= 20
+                warn "#{path}: frontmatter must include a useful description"
+                exit 1
+              end
+            ' "${skill}"
+          done

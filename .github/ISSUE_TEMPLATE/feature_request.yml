@@ -24,3 +24,22 @@ body:
       description: How should this work?
     validations:
       required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: What must be true for this to be done?
+      placeholder: |
+        - [ ] User-visible or operator-visible behavior is implemented
+        - [ ] Tests or validation cover the new path
+        - [ ] Docs/runbook/flags are updated where needed
+    validations:
+      required: false
+  - type: textarea
+    id: cross_repo
+    attributes:
+      label: Cross-Repo Impact
+      description: List dependent repos, contracts, deploy flags, generated artifacts, or rollout gates.
+      placeholder: evalops/platform, evalops/deploy, evalops/proto, evalops/maestro-internal
+    validations:
+      required: false
