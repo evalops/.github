@@ -161,15 +161,17 @@ jobs:
           delete_label_if_present() {
             local label="$1"
             local stderr_file
+            local status=0
             stderr_file="$(mktemp)"
 
-            if gh api --method DELETE \
-              "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/${label}" >/dev/null 2>"${stderr_file}"; then
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/${label}" >/dev/null 2>"${stderr_file}" || status=$?
+
+            if [ "${status}" -eq 0 ]; then
               rm -f "${stderr_file}"
               return 0
             fi
 
-            local status=$?
             if grep -qiE '(not found|404)' "${stderr_file}"; then
               echo "Label ${label} was already absent; continuing."
               rm -f "${stderr_file}"
