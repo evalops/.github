@@ -42,12 +42,12 @@ each PR:
 
 | Label | Meaning |
 |---|---|
-| `agent-authored` | Every commit in the PR carries Maestro authorship metadata. |
-| `human-authored` | No commit in the PR carries Maestro authorship metadata. |
-| `mixed-authorship` | Some commits carry Maestro metadata and some do not. |
+| `agent-authored` | Every commit in the PR carries explicit Maestro authorship metadata. |
+| `agent-assisted` | No commit in the PR carries explicit Maestro metadata; EvalOps treats untrailered PR code as LLM-assisted by default. |
+| `mixed-authorship` | Some commits carry explicit Maestro metadata and some are untrailered. |
 
 The labels are a GitHub UI affordance. The commit trailers remain the source of
-truth because they travel with the git history.
+truth for explicit Maestro provenance because they travel with the git history.
 
 ## Reusable Workflow
 
@@ -73,6 +73,8 @@ jobs:
 
 The workflow creates the three labels if they are missing, removes stale
 authorship labels, and applies the label that matches the current PR commit set.
+It only mutates labels when the desired label set changed, so repeated
+`synchronize` events do not remove and re-add the same label.
 
 ## Audit Indexing
 
