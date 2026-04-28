@@ -159,6 +159,26 @@ jobs:
             grep -Fxq "${label}" <<<"${current_labels}"
           }
 
+          authorship_labels=(agent-authored agent-assisted mixed-authorship human-authored)
+          conflicting_labels=()
+          has_desired_label=false
+
+          for label in "${authorship_labels[@]}"; do
+            if ! has_label "${label}"; then
+              continue
+            fi
+            if [ "${label}" = "${AUTHORSHIP_LABEL}" ]; then
+              has_desired_label=true
+            else
+              conflicting_labels+=("${label}")
+            fi
+          done
+
+          if [ "${has_desired_label}" = true ] && [ "${#conflicting_labels[@]}" -eq 0 ]; then
+            echo "Authorship label ${AUTHORSHIP_LABEL} is already current on #${PR_NUMBER}; no label changes needed."
+            exit 0
+          fi
+
           delete_label_if_present() {
             local label="$1"
             local stderr_file
@@ -184,13 +204,11 @@ jobs:
             return "${status}"
           }
 
-          for label in agent-authored agent-assisted mixed-authorship human-authored; do
-            if [ "${label}" != "${AUTHORSHIP_LABEL}" ] && has_label "${label}"; then
-              delete_label_if_present "${label}"
-            fi
+          for label in "${conflicting_labels[@]}"; do
+            delete_label_if_present "${label}"
           done
 
-          if ! has_label "${AUTHORSHIP_LABEL}"; then
+          if [ "${has_desired_label}" != true ]; then
             gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
               -f "labels[]=${AUTHORSHIP_LABEL}" >/dev/null
           fi
