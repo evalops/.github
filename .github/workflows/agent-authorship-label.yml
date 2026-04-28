@@ -70,9 +70,13 @@ jobs:
             local color="$2"
             local description="$3"
             local label_json
-            label_json="$(gh api "repos/${GITHUB_REPOSITORY}/labels/${name}" 2>/dev/null || true)"
+            local lookup_stderr
+            local lookup_status=0
+            lookup_stderr="$(mktemp)"
+            label_json="$(gh api "repos/${GITHUB_REPOSITORY}/labels/${name}" 2>"${lookup_stderr}")" || lookup_status=$?
 
-            if [ -n "${label_json}" ]; then
+            if [ "${lookup_status}" -eq 0 ]; then
+              rm -f "${lookup_stderr}"
               local existing_color
               local existing_description
               existing_color="$(jq -r '.color // ""' <<<"${label_json}")"
@@ -86,30 +90,42 @@ jobs:
               return 0
             fi
 
-            local stderr_file
-            stderr_file="$(mktemp)"
+            if ! grep -qiE '(not found|404)' "${lookup_stderr}" && ! jq -e '(.status | tostring) == "404" or .message == "Not Found"' <<<"${label_json}" >/dev/null 2>&1; then
+              cat "${lookup_stderr}" >&2
+              if [ -n "${label_json}" ]; then
+                printf '%s\n' "${label_json}" >&2
+              fi
+              rm -f "${lookup_stderr}"
+              return "${lookup_status}"
+            fi
+            rm -f "${lookup_stderr}"
 
-            if gh api --method POST "repos/${GITHUB_REPOSITORY}/labels" \
+            local output_file
+            local create_status=0
+            output_file="$(mktemp)"
+
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/labels" \
               -f name="${name}" \
               -f color="${color}" \
-              -f description="${description}" >/dev/null 2>"${stderr_file}"; then
-              rm -f "${stderr_file}"
+              -f description="${description}" >"${output_file}" 2>&1 || create_status=$?
+
+            if [ "${create_status}" -eq 0 ]; then
+              rm -f "${output_file}"
               return 0
             fi
 
-            local status=$?
-            if grep -qiE '(already.?exists|already_exists|Validation Failed)' "${stderr_file}"; then
+            if grep -qiE '(already.?exists|already_exists|Validation Failed)' "${output_file}"; then
               echo "Label ${name} was created concurrently; updating metadata if needed."
-              rm -f "${stderr_file}"
+              rm -f "${output_file}"
               gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${name}" \
                 -f color="${color}" \
                 -f description="${description}" >/dev/null
               return 0
             fi
 
-            cat "${stderr_file}" >&2
-            rm -f "${stderr_file}"
-            return "${status}"
+            cat "${output_file}" >&2
+            rm -f "${output_file}"
+            return "${create_status}"
           }
 
           ensure_label "agent-authored" "6f42c1" "All PR commits carry explicit Maestro authorship trailers"
