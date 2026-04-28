@@ -12,6 +12,7 @@ on:
       - ".github/workflows/**"
       - ".github/workflow-templates/**"
       - "profile/**"
+      - "test/**"
   workflow_call:
     inputs:
       require_agents:
@@ -19,13 +20,19 @@ on:
         required: false
         type: boolean
         default: false
+      runner_label:
+        description: "Runner label used for the validation job"
+        required: false
+        type: string
+        default: blacksmith-4vcpu-ubuntu-2404
 
 permissions:
   contents: read
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_label || 'blacksmith-4vcpu-ubuntu-2404' }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
@@ -33,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
+          shopt -s globstar nullglob
           files=(.github/ISSUE_TEMPLATE/*.yml .github/ISSUE_TEMPLATE/*.yaml)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No issue template YAML files found."
@@ -132,3 +139,16 @@ jobs:
               end
             ' "${skill}"
           done
+
+      - name: Run repo Ruby tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          tests=(test/**/*_test.rb test/*_test.rb)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No Ruby tests found."
+            exit 0
+          fi
+
+          ruby -Itest "${tests[@]}"
