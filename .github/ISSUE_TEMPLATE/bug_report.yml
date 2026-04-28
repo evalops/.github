@@ -32,3 +32,22 @@ body:
       placeholder: e.g. production, staging
     validations:
       required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Link logs, GitHub Actions runs, Argo apps, screenshots, traces, or reproduction artifacts.
+      placeholder: |
+        - GH run:
+        - PR:
+        - Argo app:
+        - Logs/traces:
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact / Blast Radius
+      description: Which users, services, repos, contracts, or releases are affected?
+    validations:
+      required: false

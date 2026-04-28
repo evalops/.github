@@ -1,0 +1,47 @@
+name: CI / Release Failure
+description: Track a failing GitHub Actions, release-train, Argo, or deploy verification issue
+labels: ["ci", "triage"]
+body:
+  - type: input
+    id: repo
+    attributes:
+      label: Repo
+      description: Which repo owns the failing workflow or release gate?
+      placeholder: evalops/platform
+    validations:
+      required: true
+  - type: input
+    id: run_url
+    attributes:
+      label: Run / Job / App URL
+      description: Link the exact failing GitHub Actions run, job, Argo app, or release-train PR.
+      placeholder: https://github.com/evalops/platform/actions/runs/...
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure Signature
+      description: Paste the smallest useful error text or summarize the failing check.
+    validations:
+      required: true
+  - type: textarea
+    id: suspected_cause
+    attributes:
+      label: Suspected Root Cause
+      description: Mark uncertain analysis as suspected. Avoid guessing when logs are missing.
+      placeholder: "Suspected: ..."
+    validations:
+      required: false
+  - type: textarea
+    id: minimal_fix
+    attributes:
+      label: Minimal Fix / Merge Action
+      description: What is the smallest safe change or merge action that should clear this?
+      placeholder: |
+        - [ ] Patch workflow/action version
+        - [ ] Fix test expectation
+        - [ ] Merge existing green PR
+        - [ ] Rerun after upstream outage
+    validations:
+      required: false

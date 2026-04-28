@@ -1,0 +1,45 @@
+name: Codex Follow-Up
+description: Capture an agent-discovered gap that should become concrete backlog
+labels: ["enhancement", "triage"]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: Where did this follow-up come from?
+      placeholder: Codex review, PR #123, CI triage, org review, meeting notes
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: What did the agent find? Include file paths, PRs, issue links, or commands when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: why_now
+    attributes:
+      label: Why It Matters
+      description: Explain the leverage, risk, or repeated workflow this would improve.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_work
+    attributes:
+      label: Proposed Work
+      description: Turn the finding into a concrete implementation slice.
+      placeholder: |
+        - [ ] Add guardrail
+        - [ ] Add regression test
+        - [ ] Update generated artifacts
+        - [ ] Document rollout or operator path
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: What should Codex or a reviewer run before closing this?
+    validations:
+      required: false

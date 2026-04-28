@@ -1,0 +1,58 @@
+name: Cross-Repo Contract Change
+description: Track work that changes proto, API, event, SDK, deploy, or runtime contracts across repos
+labels: ["enhancement", "triage"]
+body:
+  - type: input
+    id: owner_repo
+    attributes:
+      label: Owning Repo
+      description: Which repo should own the first PR?
+      placeholder: evalops/platform
+    validations:
+      required: true
+  - type: textarea
+    id: contract_surface
+    attributes:
+      label: Contract Surface
+      description: Describe the proto/API/event/SDK/deploy/runtime surface that changes.
+      placeholder: e.g. chronicle.v1 Heartbeat, maestro event bus payload, Helm values, generated TS SDK
+    validations:
+      required: true
+  - type: textarea
+    id: dependent_repos
+    attributes:
+      label: Dependent Repos
+      description: List repos that must consume, verify, or deploy the change.
+      placeholder: |
+        - evalops/proto
+        - evalops/platform
+        - evalops/deploy
+        - evalops/maestro-internal
+    validations:
+      required: true
+  - type: textarea
+    id: rollout_plan
+    attributes:
+      label: Rollout Plan
+      description: How should the change be sequenced safely?
+      placeholder: |
+        1. Add backward-compatible contract field.
+        2. Regenerate SDKs and fixtures.
+        3. Update producer.
+        4. Update consumer.
+        5. Add deploy flag or rollout gate if needed.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: What checks prove producer, consumer, generated artifacts, and deploy surfaces are aligned?
+      placeholder: |
+        - [ ] Generated artifacts updated
+        - [ ] Producer regression test
+        - [ ] Consumer regression test
+        - [ ] Deploy/render check
+        - [ ] GitHub Actions checked
+    validations:
+      required: true
