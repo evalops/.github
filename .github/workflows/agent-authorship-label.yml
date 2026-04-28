@@ -1,0 +1,115 @@
+name: agent-authorship-label
+
+on:
+  workflow_call:
+    inputs:
+      fail_on_incomplete:
+        description: "Fail when a Maestro-marked commit is missing one or more required Maestro trailers"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout org workflow helpers
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: evalops/.github
+          ref: main
+          path: org-defaults
+
+      - name: Resolve pull request
+        id: pr
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          number="$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH}")"
+          if [ -z "${number}" ]; then
+            echo "::error::agent-authorship-label must run from a pull_request or pull_request_target event."
+            exit 1
+          fi
+
+          echo "number=${number}" >> "${GITHUB_OUTPUT}"
+
+      - name: Fetch pull request commits
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[] | {sha: .sha, message: .commit.message}' > commits.jsonl
+
+      - name: Classify authorship
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby org-defaults/.github/scripts/classify-agent-authorship.rb \
+            --github-output "${GITHUB_OUTPUT}" \
+            commits.jsonl
+
+      - name: Ensure authorship labels exist
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ensure_label() {
+            local name="$1"
+            local color="$2"
+            local description="$3"
+
+            if gh api "repos/${GITHUB_REPOSITORY}/labels/${name}" >/dev/null 2>&1; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${name}" \
+                -f color="${color}" \
+                -f description="${description}" >/dev/null
+            else
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/labels" \
+                -f name="${name}" \
+                -f color="${color}" \
+                -f description="${description}" >/dev/null
+            fi
+          }
+
+          ensure_label "agent-authored" "6f42c1" "All PR commits carry Maestro authorship trailers"
+          ensure_label "human-authored" "0e8a16" "No PR commits carry Maestro authorship trailers"
+          ensure_label "mixed-authorship" "fbca04" "Some PR commits carry Maestro authorship trailers"
+
+      - name: Apply authorship label
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          AUTHORSHIP_LABEL: ${{ steps.classify.outputs.label }}
+        run: |
+          set -euo pipefail
+
+          for label in agent-authored human-authored mixed-authorship; do
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/${label}" >/dev/null 2>&1 || true
+          done
+
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
+            -f "labels[]=${AUTHORSHIP_LABEL}" >/dev/null
+
+          echo "Applied ${AUTHORSHIP_LABEL} to #${PR_NUMBER}."
+
+      - name: Check required Maestro trailers
+        if: ${{ inputs.fail_on_incomplete && steps.classify.outputs.incomplete_agent_commits != '0' }}
+        shell: bash
+        env:
+          INCOMPLETE_AGENT_COMMITS: ${{ steps.classify.outputs.incomplete_agent_commits }}
+        run: |
+          echo "::error::${INCOMPLETE_AGENT_COMMITS} Maestro-marked commit(s) are missing required authorship trailers."
+          exit 1

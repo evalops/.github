@@ -6,9 +6,12 @@ on:
       - "AGENTS.md"
       - "**/AGENTS.md"
       - ".agents/skills/**"
+      - ".github/scripts/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/pull_request_template.md"
-      - ".github/workflows/codex-rails-check.yml"
+      - ".github/workflows/**"
+      - ".github/workflow-templates/**"
+      - "profile/**"
   workflow_call:
     inputs:
       require_agents:
@@ -37,6 +40,41 @@ jobs:
             exit 0
           fi
           ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' "${files[@]}"
+
+      - name: Validate workflow YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/workflows/*.yml .github/workflows/*.yaml .github/workflow-templates/*.yml .github/workflow-templates/*.yaml)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No workflow YAML files found."
+            exit 0
+          fi
+          ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' "${files[@]}"
+
+      - name: Validate workflow template metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/workflow-templates/*.properties.json)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No workflow template metadata files found."
+            exit 0
+          fi
+          ruby -e '
+            require "json"
+            ARGV.each do |f|
+              data = JSON.parse(File.read(f))
+              icon = data["iconName"].to_s
+              if !icon.empty? && !icon.match?(/\Aocticon [a-z0-9-]+\z/) && !File.exist?(".github/workflow-templates/#{icon}.svg")
+                warn "#{f}: iconName must be an octicon reference like \"octicon tag\" or a local SVG basename"
+                exit 1
+              end
+              puts "ok #{f}"
+            end
+          ' "${files[@]}"
 
       - name: Check AGENTS.md files
         shell: bash
