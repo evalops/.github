@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "AGENTS.md"
+      - "**/AGENTS.md"
       - ".agents/skills/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/pull_request_template.md"
@@ -16,11 +17,14 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Validate issue template YAML
         shell: bash
@@ -34,19 +38,28 @@ jobs:
           fi
           ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' "${files[@]}"
 
-      - name: Check AGENTS.md presence
+      - name: Check AGENTS.md files
         shell: bash
         env:
           REQUIRE_AGENTS: ${{ inputs.require_agents || false }}
         run: |
           set -euo pipefail
+          shopt -s globstar nullglob
           if [ "${REQUIRE_AGENTS}" = "true" ] && [ ! -f AGENTS.md ]; then
             echo "::error::AGENTS.md is required for this repository."
             exit 1
           fi
-          if [ -f AGENTS.md ]; then
-            test -s AGENTS.md || { echo "::error::AGENTS.md is empty"; exit 1; }
+
+          agents=(**/AGENTS.md)
+          if [ "${#agents[@]}" -eq 0 ]; then
+            echo "No AGENTS.md files found."
+            exit 0
           fi
+
+          for agent in "${agents[@]}"; do
+            test -s "${agent}" || { echo "::error::${agent} is empty"; exit 1; }
+            echo "ok ${agent}"
+          done
 
       - name: Validate skill frontmatter
         shell: bash
