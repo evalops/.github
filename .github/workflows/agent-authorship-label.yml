@@ -27,6 +27,7 @@ permissions:
 jobs:
   label:
     runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 10
     steps:
       - name: Checkout org workflow helpers
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

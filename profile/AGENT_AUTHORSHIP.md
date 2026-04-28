@@ -76,6 +76,10 @@ authorship labels, and applies the label that matches the current PR commit set.
 It only mutates labels when the desired label set changed, so repeated
 `synchronize` events do not remove and re-add the same label.
 
+For production repositories, pin the reusable workflow to an immutable
+`evalops/.github` commit SHA. When pinning, pass the same SHA as `helper_ref` so
+the workflow and helper scripts are resolved from the same reviewed revision.
+
 ## Audit Indexing
 
 Audit ingestion should parse trailers from every commit merged to protected
