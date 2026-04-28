@@ -26,7 +26,7 @@ messages = input.each_line.map do |line|
 end.compact
 
 required_patterns = {
-  "co_author" => /^Co-Authored-By:\s*Maestro <maestro@evalops\.dev>\s*$/i,
+  "co_author" => /^Co-Authored-By:\s*Maestro\s+<maestro@evalops\.dev>\s*$/i,
   "version" => /^Maestro-Version:\s*\S.+$/i,
   "prompt_id" => /^Maestro-Prompt-Id:\s*\S.+$/i,
   "approvals_id" => /^Maestro-Approvals-Id:\s*\S.+$/i,
