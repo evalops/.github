@@ -27,9 +27,9 @@ end.compact
 
 required_patterns = {
   "co_author" => /^Co-Authored-By:\s*Maestro\s+<maestro@evalops\.dev>\s*$/i,
-  "version" => /^Maestro-Version:\s*\S.+$/i,
-  "prompt_id" => /^Maestro-Prompt-Id:\s*\S.+$/i,
-  "approvals_id" => /^Maestro-Approvals-Id:\s*\S.+$/i,
+  "version" => /^Maestro-Version:\s*\S.*$/i,
+  "prompt_id" => /^Maestro-Prompt-Id:\s*\S.*$/i,
+  "approvals_id" => /^Maestro-Approvals-Id:\s*\S.*$/i,
 }
 
 marker_pattern = /
@@ -38,14 +38,14 @@ marker_pattern = /
 /ix
 
 agent_commits = 0
-human_commits = 0
+untrailered_commits = 0
 incomplete_commits = 0
 
 messages.each do |message|
   has_marker = message.lines.any? { |line| line.match?(marker_pattern) }
 
   unless has_marker
-    human_commits += 1
+    untrailered_commits += 1
     next
   end
 
@@ -57,19 +57,20 @@ messages.each do |message|
 end
 
 label =
-  if agent_commits.positive? && human_commits.positive?
+  if agent_commits.positive? && untrailered_commits.positive?
     "mixed-authorship"
   elsif agent_commits.positive?
     "agent-authored"
   else
-    "human-authored"
+    "agent-assisted"
   end
 
 outputs = {
   "label" => label,
   "total_commits" => messages.length,
   "agent_commits" => agent_commits,
-  "human_commits" => human_commits,
+  "untrailered_commits" => untrailered_commits,
+  "human_commits" => untrailered_commits,
   "incomplete_agent_commits" => incomplete_commits,
 }
 
