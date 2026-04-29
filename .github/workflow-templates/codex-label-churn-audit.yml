@@ -33,7 +33,16 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/events" --paginate
             echo
             echo "# Workflows that mention labels"
-            rg -n "add-label|remove-label|gh pr edit|issues.addLabels|issues.removeLabel|labels" .github/workflows scripts || true
+            search_paths=()
+            for path in .github/workflows scripts; do
+              if [ -e "${path}" ]; then
+                search_paths+=("${path}")
+              fi
+            done
+
+            if [ "${#search_paths[@]}" -gt 0 ]; then
+              grep -RInE "add-label|remove-label|gh pr edit|issues.addLabels|issues.removeLabel|labels" "${search_paths[@]}" || true
+            fi
           } > codex-label-churn-evidence.md
 
       - name: Run Codex label audit

@@ -71,12 +71,11 @@ services.each do |name, service|
   depends_on = service.fetch("depends_on", [])
   unless depends_on.is_a?(Array)
     error(errors, name, "depends_on must be a list when present")
-    next
-  end
-
-  depends_on.each do |dependency|
-    unless services.key?(dependency)
-      error(errors, name, "depends_on references unknown service #{dependency.inspect}")
+  else
+    depends_on.each do |dependency|
+      unless services.key?(dependency)
+        error(errors, name, "depends_on references unknown service #{dependency.inspect}")
+      end
     end
   end
 

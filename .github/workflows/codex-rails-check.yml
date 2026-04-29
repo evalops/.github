@@ -176,7 +176,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s globstar nullglob
-          tests=(test/**/*_test.rb test/*_test.rb)
+          tests=(test/**/*_test.rb)
           if [ "${#tests[@]}" -eq 0 ]; then
             echo "No Ruby tests found."
             exit 0

@@ -48,6 +48,18 @@ class ValidateServicesCatalogTest < Minitest::Test
     assert_match(/identity: runtime must be one of gke, none, standalone/, stderr)
   end
 
+  def test_proto_consumer_is_validated_even_when_depends_on_type_is_invalid
+    catalog = minimal_catalog
+    catalog["services"]["identity"]["depends_on"] = "proto"
+    catalog["services"]["identity"]["proto_consumer"] = "yes"
+
+    stdout, stderr, status = run_validator(catalog)
+
+    refute status.success?, stdout
+    assert_match(/identity: depends_on must be a list when present/, stderr)
+    assert_match(/identity: proto_consumer must be true or false when present/, stderr)
+  end
+
   private
 
   def run_validator(catalog)
