@@ -43,6 +43,8 @@ Use the workflow templates under `.github/workflow-templates/` to add Codex
 lanes to downstream repositories:
 
 - `codex-pr-review.yml` reviews PR diffs and posts focused findings.
+- `codex-structured-pr-review.yml` reviews PR diffs with a JSON schema and
+  posts actionable findings as inline review comments.
 - `codex-ci-triage.yml` triages a specific failed Actions run.
 - `codex-post-merge-verify.yml` checks default-branch health after merges.
 - `codex-label-churn-audit.yml` audits PR label mutation loops.
@@ -51,6 +53,9 @@ Each template expects an `OPENAI_API_KEY` repository secret. Repositories that
 need stronger, repo-specific behavior should copy the matching prompt from
 `.github/codex/prompts/` into their own `.github/codex/prompts/` directory and
 point the workflow at that file.
+
+For deeper adoption patterns beyond PR comments, see
+`profile/CODEX_HIGH_LEVERAGE_WORKFLOWS.md`.
 
 ### Agent Authorship Labels
 

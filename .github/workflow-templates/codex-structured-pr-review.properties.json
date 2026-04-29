@@ -1,0 +1,10 @@
+{
+  "name": "Codex structured pull request review",
+  "description": "Run Codex with a JSON schema and publish actionable findings as inline PR review comments.",
+  "iconName": "octicon code-review",
+  "categories": [
+    "Automation",
+    "Code review",
+    "Continuous integration"
+  ]
+}

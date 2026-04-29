@@ -7,6 +7,7 @@ on:
       - "**/AGENTS.md"
       - "README.md"
       - ".agents/skills/**"
+      - ".github/codex/schemas/**"
       - ".github/scripts/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/pull_request_template.md"
@@ -84,6 +85,18 @@ jobs:
               puts "ok #{f}"
             end
           ' "${files[@]}"
+
+      - name: Validate Codex JSON schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/codex/schemas/*.json)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No Codex JSON schemas found."
+            exit 0
+          fi
+          ruby -e 'require "json"; ARGV.each { |f| JSON.parse(File.read(f)); puts "ok #{f}" }' "${files[@]}"
 
       - name: Check AGENTS.md files
         shell: bash
