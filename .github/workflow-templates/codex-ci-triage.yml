@@ -1,0 +1,74 @@
+name: Codex CI failure triage
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "GitHub Actions run id to triage"
+        required: true
+        type: string
+      pr_number:
+        description: "Optional PR number to comment on"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      final_message: ${{ steps.run-codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Capture failed run evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          {
+            echo "# GitHub Actions failure"
+            echo
+            gh run view "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --json url,name,displayTitle,event,headBranch,headSha,conclusion,createdAt,updatedAt
+            echo
+            gh run view "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --log-failed || true
+          } > codex-ci-evidence.md
+
+      - name: Run Codex CI triage
+        id: run-codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Investigate the failure described in codex-ci-evidence.md. Start
+            from the exact failed run/job/step, distinguish stale failures from
+            live failures, and make the smallest safe patch when appropriate.
+            Report commands run and remaining CI or review-thread work.
+          codex-args: '["--full-auto"]'
+          output-file: codex-ci-triage.md
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
+
+      - name: Post triage summary
+        if: ${{ inputs.pr_number != '' && steps.run-codex.outputs.final-message != '' }}
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run-codex.outputs.final-message }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              body: process.env.CODEX_FINAL_MESSAGE,
+            });

@@ -1,0 +1,10 @@
+{
+  "name": "Codex pull request review",
+  "description": "Run OpenAI Codex on PRs with EvalOps review guidance and post the findings back to the thread.",
+  "iconName": "octicon code-review",
+  "categories": [
+    "Automation",
+    "Code review",
+    "Continuous integration"
+  ]
+}

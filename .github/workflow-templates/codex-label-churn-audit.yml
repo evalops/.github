@@ -1,0 +1,68 @@
+name: Codex label churn audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to audit"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Capture label timeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          {
+            echo "# Label timeline"
+            echo
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/events" --paginate
+            echo
+            echo "# Workflows that mention labels"
+            rg -n "add-label|remove-label|gh pr edit|issues.addLabels|issues.removeLabel|labels" .github/workflows scripts || true
+          } > codex-label-churn-evidence.md
+
+      - name: Run Codex label audit
+        id: run-codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Audit codex-label-churn-evidence.md. Identify which automation is
+            adding and removing labels, whether the churn is intentional, and
+            the smallest durable fix. Remember that EvalOps human committed
+            code is usually LLM-authored, so agent-authorship labels should not
+            be treated as suspicious by default.
+          output-file: codex-label-churn-audit.md
+          safety-strategy: drop-sudo
+          sandbox: read-only
+
+      - name: Comment with audit
+        if: ${{ steps.run-codex.outputs.final-message != '' }}
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run-codex.outputs.final-message }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              body: process.env.CODEX_FINAL_MESSAGE,
+            });

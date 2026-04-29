@@ -37,6 +37,21 @@ operational assumptions.
 
 ## Reusable Workflows
 
+### Codex Workflow Templates
+
+Use the workflow templates under `.github/workflow-templates/` to add Codex
+lanes to downstream repositories:
+
+- `codex-pr-review.yml` reviews PR diffs and posts focused findings.
+- `codex-ci-triage.yml` triages a specific failed Actions run.
+- `codex-post-merge-verify.yml` checks default-branch health after merges.
+- `codex-label-churn-audit.yml` audits PR label mutation loops.
+
+Each template expects an `OPENAI_API_KEY` repository secret. Repositories that
+need stronger, repo-specific behavior should copy the matching prompt from
+`.github/codex/prompts/` into their own `.github/codex/prompts/` directory and
+point the workflow at that file.
+
 ### Agent Authorship Labels
 
 Use `.github/workflows/agent-authorship-label.yml` to apply one authorship label

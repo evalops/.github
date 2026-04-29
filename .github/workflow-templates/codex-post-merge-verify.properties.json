@@ -1,0 +1,9 @@
+{
+  "name": "Codex post-merge verification",
+  "description": "Have Codex inspect recent main-branch runs and summarize post-merge health.",
+  "iconName": "octicon checklist",
+  "categories": [
+    "Automation",
+    "Continuous integration"
+  ]
+}

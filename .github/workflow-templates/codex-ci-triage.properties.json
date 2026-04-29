@@ -1,0 +1,9 @@
+{
+  "name": "Codex CI failure triage",
+  "description": "Manually run Codex against a failed GitHub Actions run and optionally post the fix summary to a PR.",
+  "iconName": "octicon pulse",
+  "categories": [
+    "Automation",
+    "Continuous integration"
+  ]
+}
