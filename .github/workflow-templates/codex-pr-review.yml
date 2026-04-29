@@ -1,0 +1,75 @@
+name: Codex pull request review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  codex-review:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      final_message: ${{ steps.run-codex.outputs.final-message }}
+    steps:
+      - name: Determine pull request number
+        id: pr
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            echo "number=${EVENT_PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "number=${INPUT_PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.number != '' && format('refs/pull/{0}/merge', steps.pr.outputs.number) || github.ref }}
+          fetch-depth: 0
+
+      - name: Pre-fetch pull request refs
+        if: ${{ steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          base_ref="$(gh pr view "${PR_NUMBER}" --json baseRefName --jq .baseRefName)"
+          git fetch --no-tags origin \
+            "${base_ref}" \
+            "+refs/pull/${PR_NUMBER}/head"
+
+      - name: Run Codex review
+        id: run-codex
+        uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Review this EvalOps pull request. Read applicable AGENTS.md files,
+            inspect the diff and live GitHub context, and focus on actionable
+            defects, missing tests, generated drift, CI risk, workflow label
+            churn, and distributed tracing regressions. Include file/line
+            references when possible.
+          output-file: codex-review.md
+          safety-strategy: drop-sudo
+          sandbox: read-only
+
+      - name: Post Codex feedback
+        if: ${{ steps.run-codex.outputs.final-message != '' && steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: gh pr comment "${PR_NUMBER}" --body-file codex-review.md

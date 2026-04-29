@@ -1,0 +1,70 @@
+name: Codex post-merge verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      merge_sha:
+        description: "Merge commit or main-branch SHA to verify"
+        required: false
+        type: string
+  schedule:
+    - cron: "37 */6 * * *"
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Capture main-branch evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          {
+            echo "# Default-branch verification"
+            echo
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "merge_sha=${MERGE_SHA:-${GITHUB_SHA}}"
+            echo
+            gh run list --repo "${GITHUB_REPOSITORY}" --branch main --limit 20 \
+              --json databaseId,name,event,status,conclusion,headSha,createdAt,updatedAt,url
+          } > codex-post-merge-evidence.md
+
+      - name: Run Codex verifier
+        id: run-codex
+        uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Verify default-branch health using codex-post-merge-evidence.md and
+            the repository's local guidance. Decide whether the latest main
+            state is healthy, unhealthy, or inconclusive. If unhealthy, propose
+            the smallest follow-up with acceptance criteria.
+          output-file: codex-post-merge-verify.md
+          safety-strategy: drop-sudo
+          sandbox: read-only
+
+      - name: Publish verification report
+        if: ${{ steps.run-codex.outputs.final-message != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[codex] Post-merge verification"
+          if issue_number="$(gh issue list --state open --search "\"${title}\" in:title" --limit 1 --json number --jq '.[0].number // empty')" && [ -n "${issue_number}" ]; then
+            gh issue comment "${issue_number}" --body-file codex-post-merge-verify.md
+          else
+            gh issue create --title "${title}" --body-file codex-post-merge-verify.md
+          fi
+
+      - name: Append report to summary
+        if: ${{ always() && hashFiles('codex-post-merge-verify.md') != '' }}
+        run: cat codex-post-merge-verify.md >> "${GITHUB_STEP_SUMMARY}"

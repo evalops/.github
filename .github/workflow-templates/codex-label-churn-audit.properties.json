@@ -1,0 +1,9 @@
+{
+  "name": "Codex label churn audit",
+  "description": "Have Codex inspect PR label mutation events and identify automation loops.",
+  "iconName": "octicon tag",
+  "categories": [
+    "Automation",
+    "Code review"
+  ]
+}
