@@ -1,0 +1,141 @@
+name: Codex structured pull request review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: codex-structured-review-${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  codex-structured-review:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Determine pull request number
+        id: pr
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            number="${EVENT_PR_NUMBER}"
+          else
+            number="${INPUT_PR_NUMBER}"
+          fi
+          if [ -z "${number}" ]; then
+            echo "::error::pr_number is required for workflow_dispatch."
+            exit 1
+          fi
+          echo "number=${number}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ steps.pr.outputs.number }}/merge
+          fetch-depth: 0
+
+      - name: Fetch pull request refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh pr view "${PR_NUMBER}" --json baseRefName,baseRefOid,headRefOid,headRefName,title,url)"
+          base_ref="$(jq -r .baseRefName <<<"${pr_json}")"
+          base_sha="$(jq -r .baseRefOid <<<"${pr_json}")"
+          head_sha="$(jq -r .headRefOid <<<"${pr_json}")"
+          head_ref="$(jq -r .headRefName <<<"${pr_json}")"
+          title="$(jq -r .title <<<"${pr_json}")"
+          url="$(jq -r .url <<<"${pr_json}")"
+          git fetch --no-tags origin \
+            "${base_ref}" \
+            "+refs/pull/${PR_NUMBER}/head"
+          {
+            echo "base_ref=${base_ref}"
+            echo "base_sha=${base_sha}"
+            echo "head_sha=${head_sha}"
+            echo "head_ref=${head_ref}"
+            echo "title=${title}"
+            echo "url=${url}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build Codex review prompt
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_TITLE: ${{ steps.refs.outputs.title }}
+          PR_URL: ${{ steps.refs.outputs.url }}
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+          BASE_REF: ${{ steps.refs.outputs.base_ref }}
+          HEAD_REF: ${{ steps.refs.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          prompt_file="codex-structured-review-prompt.md"
+          cat .github/codex/prompts/structured-pr-review.md > "${prompt_file}"
+          {
+            echo
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Pull request: #${PR_NUMBER} ${PR_TITLE}"
+            echo "Pull request URL: ${PR_URL}"
+            echo "Base: ${BASE_REF} ${BASE_SHA}"
+            echo "Head: ${HEAD_REF} ${HEAD_SHA}"
+            echo
+            echo "Changed files:"
+            git --no-pager diff --name-status "${BASE_SHA}" "${HEAD_SHA}"
+            echo
+            echo "Unified diff with five lines of context:"
+            git --no-pager diff --unified=5 "${BASE_SHA}" "${HEAD_SHA}"
+          } >> "${prompt_file}"
+
+      - name: Run Codex structured review
+        id: run-codex
+        uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: codex-structured-review-prompt.md
+          output-schema-file: .github/codex/schemas/pr-review.schema.json
+          output-file: codex-structured-review.json
+          safety-strategy: drop-sudo
+          sandbox: read-only
+          model: ${{ vars.CODEX_REVIEW_MODEL || 'gpt-5.5' }}
+          effort: high
+
+      - name: Publish structured review
+        if: ${{ always() && steps.run-codex.outputs.final-message != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          ruby .github/scripts/publish-codex-structured-review.rb \
+            --review-json codex-structured-review.json \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pr "${PR_NUMBER}" \
+            --commit "${HEAD_SHA}"
+
+      - name: Upload Codex review artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-structured-review
+          path: |
+            codex-structured-review-prompt.md
+            codex-structured-review.json
+          if-no-files-found: ignore
