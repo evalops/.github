@@ -52,3 +52,19 @@ jobs:
           output-file: codex-post-merge-verify.md
           safety-strategy: drop-sudo
           sandbox: read-only
+
+      - name: Publish verification report
+        if: ${{ steps.run-codex.outputs.final-message != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[codex] Post-merge verification"
+          if issue_number="$(gh issue list --state open --search "\"${title}\" in:title" --limit 1 --json number --jq '.[0].number // empty')" && [ -n "${issue_number}" ]; then
+            gh issue comment "${issue_number}" --body-file codex-post-merge-verify.md
+          else
+            gh issue create --title "${title}" --body-file codex-post-merge-verify.md
+          fi
+
+      - name: Append report to summary
+        if: ${{ always() && hashFiles('codex-post-merge-verify.md') != '' }}
+        run: cat codex-post-merge-verify.md >> "${GITHUB_STEP_SUMMARY}"

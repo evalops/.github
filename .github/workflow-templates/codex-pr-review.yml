@@ -23,17 +23,34 @@ jobs:
     outputs:
       final_message: ${{ steps.run-codex.outputs.final-message }}
     steps:
+      - name: Determine pull request number
+        id: pr
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            echo "number=${EVENT_PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "number=${INPUT_PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
+
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.ref }}
+          ref: ${{ steps.pr.outputs.number != '' && format('refs/pull/{0}/merge', steps.pr.outputs.number) || github.ref }}
           fetch-depth: 0
 
       - name: Pre-fetch pull request refs
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
+          base_ref="$(gh pr view "${PR_NUMBER}" --json baseRefName --jq .baseRefName)"
           git fetch --no-tags origin \
-            "${{ github.event.pull_request.base.ref }}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head"
+            "${base_ref}" \
+            "+refs/pull/${PR_NUMBER}/head"
 
       - name: Run Codex review
         id: run-codex
@@ -51,16 +68,8 @@ jobs:
           sandbox: read-only
 
       - name: Post Codex feedback
-        if: ${{ steps.run-codex.outputs.final-message != '' && github.event_name == 'pull_request' }}
-        uses: actions/github-script@v7
+        if: ${{ steps.run-codex.outputs.final-message != '' && steps.pr.outputs.number != '' }}
         env:
-          CODEX_FINAL_MESSAGE: ${{ steps.run-codex.outputs.final-message }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: process.env.CODEX_FINAL_MESSAGE,
-            });
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: gh pr comment "${PR_NUMBER}" --body-file codex-review.md
