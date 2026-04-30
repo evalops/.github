@@ -69,7 +69,9 @@ jobs:
           response="$(
             GH_TOKEN="${ORG_CODE_SEARCH_TOKEN}" gh api -X GET search/code \
               -f q='org:evalops "uses: github/codeql-action" path:.github/workflows' \
-              --jq '.items[] | "\(.repository.full_name)\t\(.path)"' \
+              --jq '.items[]
+                | select(.repository.full_name != "evalops/.github" or .path != ".github/workflows/codeql-guard.yml")
+                | "\(.repository.full_name)\t\(.path)"' \
           )"
           hits=()
           while IFS=$'\t' read -r repo path; do
