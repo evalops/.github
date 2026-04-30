@@ -1,0 +1,91 @@
+name: codeql-guard
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/workflow-templates/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/workflow-templates/**"
+  schedule:
+    # Daily org-wide drift sweep.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  guard-self:
+    name: Forbid CodeQL in evalops/.github
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Forbid github/codeql-action references
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          targets=(.github/workflows .github/workflow-templates)
+          existing=()
+          for d in "${targets[@]}"; do
+            [ -d "$d" ] && existing+=("$d")
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "no workflow directories present"
+            exit 0
+          fi
+          if grep -RIn --include='*.yml' --include='*.yaml' \
+               'github/codeql-action' "${existing[@]}" 2>/dev/null; then
+            echo "::error::EvalOps policy forbids github/codeql-action. See SECURITY.md (Code Scanning)."
+            exit 1
+          fi
+          echo "ok: no codeql-action references in evalops/.github"
+
+  guard-org:
+    name: Sweep evalops/* for CodeQL workflow drift
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Search org for github/codeql-action references
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t hits < <(
+            gh api -X GET search/code \
+              -f q='org:evalops "github/codeql-action" path:.github/workflows' \
+              --jq '.items[] | "\(.repository.full_name)\t\(.path)"' \
+              2>/dev/null || true
+          )
+          if [ "${#hits[@]}" -eq 0 ]; then
+            echo "ok: no CodeQL workflow files found in any evalops repo"
+            exit 0
+          fi
+          {
+            echo "## codeql-guard tripped"
+            echo
+            echo "EvalOps does not run GitHub CodeQL (see \`SECURITY.md\` and the Blacksmith"
+            echo "code security configuration). The following workflow files reference"
+            echo "\`github/codeql-action\` and need to be removed or the policy amended:"
+            echo
+            for h in "${hits[@]}"; do
+              repo="${h%%$'\t'*}"
+              path="${h##*$'\t'}"
+              echo "- \`${repo}\` — \`${path}\`"
+            done
+          } > /tmp/body.md
+          gh issue create \
+            --repo evalops/.github \
+            --title "codeql-guard: CodeQL workflow drift detected" \
+            --body-file /tmp/body.md
+          exit 1
