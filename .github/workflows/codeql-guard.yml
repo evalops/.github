@@ -58,7 +58,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       ORG_CODE_SEARCH_TOKEN: ${{ secrets.EVALOPS_ORG_READ_TOKEN }}
     steps:
-      - name: Search org for github/codeql-action references
+      - name: Search org for github/codeql-action uses
         shell: bash
         run: |
           set -euo pipefail
@@ -68,19 +68,30 @@ jobs:
           fi
           response="$(
             GH_TOKEN="${ORG_CODE_SEARCH_TOKEN}" gh api -X GET search/code \
-              -f q='org:evalops "github/codeql-action" path:.github/workflows' \
-              --jq '.items[] | "\(.repository.full_name)\t\(.path)"' \
+              -f q='org:evalops "uses: github/codeql-action" path:.github/workflows' \
+              --jq '.items[]
+                | select(.repository.full_name != "evalops/.github" or .path != ".github/workflows/codeql-guard.yml")
+                | "\(.repository.full_name)\t\(.path)"' \
           )"
-          if [ -z "${response}" ]; then
+          hits=()
+          while IFS=$'\t' read -r repo path; do
+            if [ -z "${repo}" ]; then
+              continue
+            fi
+            if [ "${repo}" = "evalops/.github" ] && [ "${path}" = ".github/workflows/codeql-guard.yml" ]; then
+              continue
+            fi
+            hits+=("${repo}"$'\t'"${path}")
+          done <<< "${response}"
+          if [ "${#hits[@]}" -eq 0 ]; then
             echo "ok: no CodeQL workflow files found in any evalops repo"
             exit 0
           fi
-          mapfile -t hits <<< "${response}"
           {
             echo "## codeql-guard tripped"
             echo
             echo "EvalOps does not run GitHub CodeQL (see \`SECURITY.md\` and the Blacksmith"
-            echo "code security configuration). The following workflow files reference"
+            echo "code security configuration). The following workflow files use"
             echo "\`github/codeql-action\` and need to be removed or the policy amended:"
             echo
             for h in "${hits[@]}"; do
