@@ -95,7 +95,8 @@ jobs:
               echo "::notice::Skipping stale or non-use search hit ${repo}:${path}"
             fi
           done <<< "${response}"
-          printf '%s\n' "${hits[@]}" > /tmp/file-hits.tsv
+          : > /tmp/file-hits.tsv
+          (( ${#hits[@]} )) && printf '%s\n' "${hits[@]}" > /tmp/file-hits.tsv
           if [ "${#hits[@]}" -eq 0 ]; then
             echo "ok: no codeql-action workflow files found in any evalops repo"
           fi
@@ -130,7 +131,8 @@ jobs:
               dyn_hits+=("${repo}"$'\t'"${wid}")
             done <<< "${matches}"
           done <<< "${repos}"
-          printf '%s\n' "${dyn_hits[@]}" > /tmp/dynamic-hits.tsv
+          : > /tmp/dynamic-hits.tsv
+          (( ${#dyn_hits[@]} )) && printf '%s\n' "${dyn_hits[@]}" > /tmp/dynamic-hits.tsv
           if [ "${#dyn_hits[@]}" -eq 0 ]; then
             echo "ok: no active dynamic CodeQL default-setup workflows in any evalops repo"
           else
