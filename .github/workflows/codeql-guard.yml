@@ -95,26 +95,98 @@ jobs:
               echo "::notice::Skipping stale or non-use search hit ${repo}:${path}"
             fi
           done <<< "${response}"
+          printf '%s\n' "${hits[@]}" > /tmp/file-hits.tsv
           if [ "${#hits[@]}" -eq 0 ]; then
-            echo "ok: no CodeQL workflow files found in any evalops repo"
+            echo "ok: no codeql-action workflow files found in any evalops repo"
+          fi
+
+      - name: Sweep org for dynamic CodeQL default-setup workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ORG_CODE_SEARCH_TOKEN}" ]; then
+            echo "::error::Set secrets.EVALOPS_ORG_READ_TOKEN to a token with actions:read across the org."
+            exit 1
+          fi
+          repos="$(
+            GH_TOKEN="${ORG_CODE_SEARCH_TOKEN}" gh api --paginate \
+              '/orgs/evalops/repos?per_page=100' \
+              --jq '.[] | select(.archived == false) | .name'
+          )"
+          dyn_hits=()
+          while IFS= read -r repo; do
+            [ -z "${repo}" ] && continue
+            wf_json="$(
+              GH_TOKEN="${ORG_CODE_SEARCH_TOKEN}" gh api \
+                "/repos/evalops/${repo}/actions/workflows?per_page=100" 2>/dev/null || echo '{"workflows":[]}'
+            )"
+            matches="$(
+              jq -r '.workflows[]?
+                | select(.path == "dynamic/github-code-scanning/codeql" and .state == "active")
+                | "\(.id)"' <<< "${wf_json}"
+            )"
+            while IFS= read -r wid; do
+              [ -z "${wid}" ] && continue
+              dyn_hits+=("${repo}"$'\t'"${wid}")
+            done <<< "${matches}"
+          done <<< "${repos}"
+          printf '%s\n' "${dyn_hits[@]}" > /tmp/dynamic-hits.tsv
+          if [ "${#dyn_hits[@]}" -eq 0 ]; then
+            echo "ok: no active dynamic CodeQL default-setup workflows in any evalops repo"
+          else
+            echo "::warning::Found ${#dyn_hits[@]} active dynamic CodeQL workflow(s)"
+            for h in "${dyn_hits[@]}"; do
+              echo "  - ${h}"
+            done
+          fi
+
+      - name: Aggregate findings and open tracking issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          file_count=0
+          dyn_count=0
+          [ -s /tmp/file-hits.tsv ] && file_count="$(grep -c . /tmp/file-hits.tsv || true)"
+          [ -s /tmp/dynamic-hits.tsv ] && dyn_count="$(grep -c . /tmp/dynamic-hits.tsv || true)"
+          total=$(( file_count + dyn_count ))
+          if [ "${total}" -eq 0 ]; then
+            echo "ok: no CodeQL drift in any form"
             exit 0
           fi
           {
             echo "## codeql-guard tripped"
             echo
             echo "EvalOps does not run GitHub CodeQL (see \`SECURITY.md\` and the Blacksmith"
-            echo "code security configuration). The following workflow files use"
-            echo "\`github/codeql-action\` and need to be removed or the policy amended:"
+            echo "code security configuration, which is now \`enforcement: enforced\`)."
             echo
-            for h in "${hits[@]}"; do
-              repo="${h%%$'\t'*}"
-              path="${h##*$'\t'}"
-              echo "- \`${repo}\` — \`${path}\`"
-            done
+            if [ "${file_count}" -gt 0 ]; then
+              echo "### Workflow files referencing \`github/codeql-action\`"
+              echo
+              while IFS=$'\t' read -r repo path; do
+                [ -z "${repo}" ] && continue
+                echo "- \`${repo}\` — \`${path}\`"
+              done < /tmp/file-hits.tsv
+              echo
+            fi
+            if [ "${dyn_count}" -gt 0 ]; then
+              echo "### Dynamic default-setup CodeQL workflows (active)"
+              echo
+              echo "These are installed by GitHub default code scanning, not by a file in the repo."
+              echo "They re-appear when GHAS or default setup is toggled. The org config has"
+              echo "\`code_scanning_default_setup: disabled\` and is now enforced — investigate why"
+              echo "these still show \`state: active\`."
+              echo
+              while IFS=$'\t' read -r repo wid; do
+                [ -z "${repo}" ] && continue
+                echo "- \`evalops/${repo}\` — workflow id \`${wid}\` at \`dynamic/github-code-scanning/codeql\`"
+              done < /tmp/dynamic-hits.tsv
+              echo
+            fi
           } > /tmp/body.md
           title="codeql-guard: CodeQL workflow drift detected"
           if issue_number="$(gh issue list --repo evalops/.github --state open --search "\"${title}\" in:title" --limit 1 --json number --jq '.[0].number // empty')" && [ -n "${issue_number}" ]; then
             echo "open tracking issue already exists: #${issue_number}"
+            gh issue comment "${issue_number}" --repo evalops/.github --body-file /tmp/body.md
           else
             gh issue create \
               --repo evalops/.github \
