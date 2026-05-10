@@ -13,6 +13,10 @@ on:
         description: "Minimum severity to report"
         required: false
         default: "high"
+      pr_limit:
+        description: "Maximum merged PRs to inspect"
+        required: false
+        default: "100"
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ jobs:
       GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN || github.token }}
       SINCE_HOURS: ${{ inputs.since_hours || '72' }}
       MIN_SEVERITY: ${{ inputs.min_severity || 'high' }}
+      PR_LIMIT: ${{ inputs.pr_limit || '100' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -36,12 +41,19 @@ jobs:
           ruby .github/scripts/sweep-recent-review-feedback.rb \
             --owner evalops \
             --since-hours "${SINCE_HOURS}" \
+            --pr-limit "${PR_LIMIT}" \
             --min-severity "${MIN_SEVERITY}" \
             --issue-repo evalops/.github \
             --json-output review-feedback-ledger.json \
+            --guardrail-backlog-output review-feedback-guardrail-backlog.md \
+            --guardrail-backlog-json-output review-feedback-guardrail-backlog.json \
             > review-feedback-sentinel.md
           status=$?
           cat review-feedback-sentinel.md >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo ""
+            cat review-feedback-guardrail-backlog.md
+          } >> "${GITHUB_STEP_SUMMARY}"
           if [ "${status}" -eq 0 ]; then
             exit 0
           fi
@@ -57,5 +69,16 @@ jobs:
         with:
           name: review-feedback-ledger
           path: review-feedback-ledger.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload review feedback guardrail backlog
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-feedback-guardrail-backlog
+          path: |
+            review-feedback-guardrail-backlog.md
+            review-feedback-guardrail-backlog.json
           if-no-files-found: error
           retention-days: 30

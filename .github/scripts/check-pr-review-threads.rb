@@ -17,6 +17,17 @@ module EvalOpsReviewThreadGuard
 
   module_function
 
+  def first_nonblank_line(body)
+    body.to_s.lines.map(&:strip).find { |line| !line.empty? }.to_s
+  end
+
+  def informational_summary?(body, author: nil)
+    first_line = first_nonblank_line(body)
+    return false unless first_line.match?(/\A##\s+(PR\s+Summary|Summary|Walkthrough)\b/i)
+
+    author.to_s.match?(/\A(cursor|coderabbitai|chatgpt-codex-connector)\b/i)
+  end
+
   def severity(body)
     text = body.to_s
     return "p0" if text.match?(/\bP0\b/i)
@@ -68,6 +79,8 @@ module EvalOpsReviewThreadGuard
     pull_request = payload.dig("data", "repository", "pullRequest") || {}
     feedback = []
     Array(pull_request.dig("comments", "nodes")).each do |comment|
+      next if informational_summary?(comment["body"], author: comment.dig("author", "login"))
+
       detected = severity(comment["body"])
       next if SEVERITY_RANK.fetch(detected) < threshold
 
@@ -80,6 +93,8 @@ module EvalOpsReviewThreadGuard
       }
     end
     Array(pull_request.dig("reviews", "nodes")).each do |review|
+      next if informational_summary?(review["body"], author: review.dig("author", "login"))
+
       detected = severity(review["body"])
       next if SEVERITY_RANK.fetch(detected) < threshold
 

@@ -100,6 +100,40 @@ class CheckPrReviewThreadsTest < Minitest::Test
     assert_equal "p1", feedback.first.fetch(:severity)
   end
 
+  def test_skips_informational_bot_pr_summaries
+    payload = payload_with(
+      comments: [
+        {
+          "author" => { "login" => "cursor" },
+          "body" => "## PR Summary\n\n| Severity | Count |\n| --- | --- |\n| P0 | 0 |",
+          "url" => "https://github.com/evalops/example/pull/1#issuecomment-1"
+        },
+        {
+          "author" => { "login" => "reviewer" },
+          "body" => "**High Severity** release mirror can bypass review debt",
+          "url" => "https://github.com/evalops/example/pull/1#issuecomment-2"
+        }
+      ],
+      reviews: [
+        {
+          "author" => { "login" => "cursor" },
+          "state" => "COMMENTED",
+          "body" => "\n## Walkthrough\n\nMentions P1 as a summary bucket.",
+          "url" => "https://github.com/evalops/example/pull/1#pullrequestreview-1"
+        }
+      ]
+    )
+
+    feedback = EvalOpsReviewThreadGuard.blocking_feedback(payload, min_severity: "high")
+
+    assert_equal ["pr_comment"], feedback.map { |item| item.fetch(:kind) }
+    assert_equal "https://github.com/evalops/example/pull/1#issuecomment-2", feedback.first.fetch(:url)
+  end
+
+  def test_first_nonblank_line_normalizes_leading_blank_review_bodies
+    assert_equal "**P1 Badge** real feedback", EvalOpsReviewThreadGuard.first_nonblank_line("\n\n**P1 Badge** real feedback\n\nDetails")
+  end
+
   def test_can_include_outdated_threads_when_requested
     payload = {
       "data" => {

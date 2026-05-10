@@ -21,7 +21,7 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
         path: "tests/preflight/test_agent_runtime_staging.py",
         line: 1205,
         is_outdated: false,
-        body: "**P1 Badge** correlation path can fall back to task id\n\nDetails"
+        body: "\n**P1 Badge** correlation path can fall back to task id\n\nDetails"
       },
       {
         kind: "pr_review",
@@ -84,5 +84,115 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
 
     assert_equal 0, ledger.fetch("finding_count")
     assert_equal [], ledger.fetch("findings")
+  end
+
+  def test_guardrail_backlog_ranks_recurring_feedback_classes
+    ledger = {
+      "schema_version" => "evalops.review_feedback_ledger.v1",
+      "owner" => "evalops",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "finding_count" => 4,
+      "findings" => [
+        {
+          "repo" => "evalops/platform",
+          "pr_number" => 1545,
+          "pr_title" => "proto: regenerate SDKs",
+          "feedback_url" => "https://github.com/evalops/platform/pull/1545#discussion_r1",
+          "path" => "proto/codex/v1/codex.proto",
+          "line" => 42,
+          "severity" => "p1",
+          "body_first_line" => "**P1 Badge** generated TypeScript SDK is stale"
+        },
+        {
+          "repo" => "evalops/proto",
+          "pr_number" => 88,
+          "pr_title" => "buf: add meter event",
+          "feedback_url" => "https://github.com/evalops/proto/pull/88#discussion_r2",
+          "path" => "gen/go/meter/v1/event.pb.go",
+          "line" => 7,
+          "severity" => "high",
+          "body_first_line" => "**High Severity** generated Go output was not committed"
+        },
+        {
+          "repo" => "evalops/deploy",
+          "pr_number" => 2137,
+          "pr_title" => "ci: tighten deploy workflow",
+          "feedback_url" => "https://github.com/evalops/deploy/pull/2137#discussion_r3",
+          "path" => ".github/workflows/deploy.yml",
+          "line" => 12,
+          "severity" => "high",
+          "body_first_line" => "**High Severity** workflow shell masks failed command"
+        },
+        {
+          "repo" => "evalops/deploy",
+          "pr_number" => 2142,
+          "pr_title" => "test: add staging smoke",
+          "feedback_url" => "https://github.com/evalops/deploy/pull/2142#discussion_r4",
+          "path" => "tests/preflight/test_agent_runtime_staging.py",
+          "line" => 99,
+          "severity" => "medium",
+          "body_first_line" => "**Medium Severity** smoke evidence omits runtime metadata"
+        }
+      ]
+    }
+
+    backlog = EvalOpsReviewFeedbackSweep.guardrail_backlog_json(
+      ledger,
+      generated_at: Time.utc(2026, 5, 10, 4, 30, 0)
+    )
+
+    assert_equal "evalops.review_feedback_guardrail_backlog.v1", backlog.fetch("schema_version")
+    assert_equal "evalops.review_feedback_ledger.v1", backlog.fetch("source_schema_version")
+    assert_equal "2026-05-10T04:30:00Z", backlog.fetch("generated_at")
+    assert_equal 4, backlog.fetch("source_finding_count")
+    assert_equal 3, backlog.fetch("class_count")
+
+    first = backlog.fetch("classes").first
+    assert_equal "generated-contract-drift", first.fetch("key")
+    assert_equal 140, first.fetch("score")
+    assert_equal 2, first.fetch("finding_count")
+    assert_equal ["evalops/platform", "evalops/proto"], first.fetch("repos")
+    assert_equal "evalops/platform", first.fetch("sample_findings").first.fetch("repo")
+
+    markdown = EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog)
+    assert_includes markdown, "# Review feedback guardrail backlog"
+    assert_includes markdown, "| 1 | `generated-contract-drift` Generated contract drift | 140 | 2 | evalops/platform, evalops/proto |"
+    assert_includes markdown, "<!-- evalops-review-feedback-guardrail-backlog -->"
+
+    JSON.parse(JSON.pretty_generate(backlog))
+  end
+
+  def test_guardrail_backlog_records_empty_ledgers
+    backlog = EvalOpsReviewFeedbackSweep.guardrail_backlog_json(
+      {
+        "schema_version" => "evalops.review_feedback_ledger.v1",
+        "owner" => "evalops",
+        "merged_since" => "2026-04-10",
+        "min_severity" => "p1",
+        "finding_count" => 0,
+        "findings" => []
+      },
+      generated_at: Time.utc(2026, 5, 10, 4, 30, 0)
+    )
+
+    assert_equal 0, backlog.fetch("source_finding_count")
+    assert_equal 0, backlog.fetch("class_count")
+    assert_equal [], backlog.fetch("classes")
+    assert_includes EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog), "No guardrail candidates found."
+  end
+
+  def test_body_first_line_skips_codex_review_boilerplate
+    body = <<~BODY
+
+      ### Codex Review
+
+      https://github.com/evalops/platform/blob/abc/internal/agentruntime/store.go#L10-L12
+      **<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Roll back tx before loading idempotent receipt**
+
+      Details.
+    BODY
+
+    assert_equal "Roll back tx before loading idempotent receipt", EvalOpsReviewFeedbackSweep.body_first_line(body)
   end
 end
