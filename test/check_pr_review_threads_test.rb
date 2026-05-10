@@ -65,6 +65,41 @@ class CheckPrReviewThreadsTest < Minitest::Test
     assert_equal "https://github.com/evalops/example/pull/1#discussion-2", threads.first.fetch(:url)
   end
 
+  def test_detects_top_level_pr_comment_severity_markers
+    payload = payload_with(
+      comments: [
+        {
+          "author" => { "login" => "reviewer" },
+          "body" => "**High Severity** release mirror can bypass review debt",
+          "url" => "https://github.com/evalops/example/pull/1#issuecomment-1"
+        }
+      ]
+    )
+
+    feedback = EvalOpsReviewThreadGuard.blocking_feedback(payload, min_severity: "high")
+
+    assert_equal ["pr_comment"], feedback.map { |item| item.fetch(:kind) }
+    assert_equal "high", feedback.first.fetch(:severity)
+  end
+
+  def test_detects_top_level_review_body_severity_markers
+    payload = payload_with(
+      reviews: [
+        {
+          "author" => { "login" => "reviewer" },
+          "state" => "COMMENTED",
+          "body" => "**P1 Badge** paired public PR feedback is missing",
+          "url" => "https://github.com/evalops/example/pull/1#pullrequestreview-1"
+        }
+      ]
+    )
+
+    feedback = EvalOpsReviewThreadGuard.blocking_feedback(payload, min_severity: "high")
+
+    assert_equal ["pr_review"], feedback.map { |item| item.fetch(:kind) }
+    assert_equal "p1", feedback.first.fetch(:severity)
+  end
+
   def test_can_include_outdated_threads_when_requested
     payload = {
       "data" => {
@@ -90,6 +125,20 @@ class CheckPrReviewThreadsTest < Minitest::Test
   end
 
   private
+
+  def payload_with(comments: [], reviews: [], threads: [])
+    {
+      "data" => {
+        "repository" => {
+          "pullRequest" => {
+            "comments" => { "nodes" => comments },
+            "reviews" => { "nodes" => reviews },
+            "reviewThreads" => { "nodes" => threads }
+          }
+        }
+      }
+    }
+  end
 
   def thread(id, resolved:, outdated:, body:, comments: nil)
     {
