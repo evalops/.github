@@ -5,6 +5,7 @@ require "json"
 require "digest"
 require "open3"
 require "optparse"
+require "set"
 require "tempfile"
 require "time"
 require_relative "check-pr-review-threads"
@@ -24,6 +25,18 @@ module EvalOpsReviewFeedbackSweep
       "title" => "Workflow shell footgun",
       "patterns" => [/\.github\/workflows/, /\bactionlint\b/, /\bshell\b/, /\bbash\b/, /\bset -e\b/, /\bworkflow\b/],
       "recommended_guardrail" => "Add or extend workflow lint/security checks so fragile shell and GitHub Actions mistakes fail before review."
+    },
+    {
+      "key" => "parser-cli-contract",
+      "title" => "Parser and CLI contract drift",
+      "patterns" => [/\bparse\b/, /\bparser\b/, /\bcli\b/, /\bargv\b/, /\bflag\b/, /\bsubstring\b/, /\bcommand\b/],
+      "recommended_guardrail" => "Add parser-backed tests that fail when command text, flags, or structured inputs are accepted by substring matching instead of the real parser."
+    },
+    {
+      "key" => "visual-capture-resilience",
+      "title" => "Visual capture resilience gap",
+      "patterns" => [/\bvisual\b/, /\bsampler\b/, /\bcapture\b/, /\bframe\b/, /\bperception\b/, /\bscreenshot\b/, /\bimage\b/, /\bocr\b/],
+      "recommended_guardrail" => "Add capture/perception regression coverage that preserves partial frame results and surfaces provider errors without dropping the whole capture."
     },
     {
       "key" => "generated-contract-drift",
@@ -395,6 +408,14 @@ module EvalOpsReviewFeedbackSweep
     JSON.parse(stdout).find { |issue| issue.fetch("title") == title }
   end
 
+  def guardrail_issue_key_from_title(title)
+    prefix = "#{GUARDRAIL_ISSUE_TITLE_PREFIX} "
+    return nil unless title.to_s.start_with?(prefix)
+
+    match = title.to_s.match(/\(([^()]+)\)\z/)
+    match[1] if match
+  end
+
   def upsert_guardrail_class_issue(repo:, backlog:, entry:)
     title = guardrail_issue_title(entry)
     body = guardrail_issue_body(backlog, entry)
@@ -441,6 +462,47 @@ module EvalOpsReviewFeedbackSweep
   def upsert_guardrail_class_issues(repo:, backlog:)
     backlog.fetch("classes").map do |entry|
       upsert_guardrail_class_issue(repo: repo, backlog: backlog, entry: entry)
+    end
+  end
+
+  def list_open_guardrail_class_issues(repo:)
+    stdout, stderr, status = gh(
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--search",
+      "\"#{GUARDRAIL_ISSUE_TITLE_PREFIX}\" in:title",
+      "--limit",
+      "100",
+      "--json",
+      "number,title,url"
+    )
+    raise "gh issue list failed: #{stderr.strip}" unless status.success?
+
+    JSON.parse(stdout)
+  end
+
+  def close_stale_guardrail_class_issues(repo:, backlog:)
+    active_keys = backlog.fetch("classes").map { |entry| entry.fetch("key") }.to_set
+    list_open_guardrail_class_issues(repo: repo).each_with_object([]) do |issue, results|
+      class_key = guardrail_issue_key_from_title(issue.fetch("title"))
+      next if class_key.nil? || active_keys.include?(class_key)
+
+      comment = "Closing because the review feedback sentinel no longer ranks `#{class_key}` as an active guardrail candidate in the current backlog window."
+      gh("issue", "close", issue.fetch("number").to_s, "--repo", repo, "--comment", comment).then do |_out, err, ok|
+        raise "gh issue close failed: #{err.strip}" unless ok.success?
+      end
+      result = {
+        "class_key" => class_key,
+        "title" => issue.fetch("title"),
+        "issue_number" => issue.fetch("number"),
+        "issue_url" => issue.fetch("url"),
+        "action" => "closed_stale"
+      }
+      results << result
     end
   end
 
@@ -557,7 +619,10 @@ if $PROGRAM_NAME == __FILE__
     File.write(options.fetch(:guardrail_backlog_json_output), "#{JSON.pretty_generate(backlog)}\n") if options[:guardrail_backlog_json_output]
     File.write(options.fetch(:guardrail_backlog_output), "#{EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog)}\n") if options[:guardrail_backlog_output]
     issue_results = []
-    issue_results = EvalOpsReviewFeedbackSweep.upsert_guardrail_class_issues(repo: options.fetch(:guardrail_issue_repo), backlog: backlog) if backlog.fetch("classes").any? && options[:guardrail_issue_repo] && !options.fetch(:dry_run)
+    if options[:guardrail_issue_repo] && !options.fetch(:dry_run)
+      issue_results.concat(EvalOpsReviewFeedbackSweep.upsert_guardrail_class_issues(repo: options.fetch(:guardrail_issue_repo), backlog: backlog)) if backlog.fetch("classes").any?
+      issue_results.concat(EvalOpsReviewFeedbackSweep.close_stale_guardrail_class_issues(repo: options.fetch(:guardrail_issue_repo), backlog: backlog))
+    end
     if options[:guardrail_lifecycle_json_output]
       lifecycle = EvalOpsReviewFeedbackSweep.guardrail_lifecycle_json(backlog, issue_results: issue_results)
       File.write(options.fetch(:guardrail_lifecycle_json_output), "#{JSON.pretty_generate(lifecycle)}\n")
