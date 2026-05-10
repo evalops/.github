@@ -208,6 +208,91 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_includes EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog), "No guardrail candidates found."
   end
 
+  def test_guardrail_issue_title_and_body_are_stable_lifecycle_artifacts
+    backlog = {
+      "schema_version" => "evalops.review_feedback_guardrail_backlog.v1",
+      "owner" => "evalops",
+      "generated_at" => "2026-05-10T05:40:00Z",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "class_count" => 1,
+      "classes" => [
+        {
+          "key" => "runtime-smoke-coverage",
+          "title" => "Runtime smoke coverage gap",
+          "score" => 100,
+          "finding_count" => 2,
+          "repo_count" => 1,
+          "repos" => ["evalops/platform"],
+          "recommended_guardrail" => "Add a smoke or preflight fixture that proves the runtime-visible behavior.",
+          "sample_findings" => [
+            {
+              "repo" => "evalops/platform",
+              "pr_number" => 1676,
+              "feedback_url" => "https://github.com/evalops/platform/pull/1676#discussion_r1",
+              "path" => "internal/agentruntime/agentruntime/postgres_store.go",
+              "line" => 295,
+              "severity" => "p1",
+              "body_first_line" => "Roll back tx before loading idempotent receipt"
+            }
+          ]
+        }
+      ]
+    }
+    entry = backlog.fetch("classes").first
+
+    assert_equal(
+      "[codex] Guardrail backlog: Runtime smoke coverage gap (runtime-smoke-coverage)",
+      EvalOpsReviewFeedbackSweep.guardrail_issue_title(entry)
+    )
+
+    body = EvalOpsReviewFeedbackSweep.guardrail_issue_body(backlog, entry)
+    assert_includes body, "<!-- evalops-review-feedback-guardrail-issue:runtime-smoke-coverage -->"
+    assert_includes body, "- Class: `runtime-smoke-coverage`"
+    assert_includes body, "- Repos: `evalops/platform`"
+    assert_includes body, "Roll back tx before loading idempotent receipt"
+    assert_includes body, "The guardrail fails for at least one representative feedback shape listed above."
+    assert_includes body, "The issue is closed only after the guardrail has merged"
+  end
+
+  def test_guardrail_lifecycle_json_records_issue_actions
+    backlog = {
+      "schema_version" => "evalops.review_feedback_guardrail_backlog.v1",
+      "owner" => "evalops",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "class_count" => 1,
+      "classes" => []
+    }
+    lifecycle = EvalOpsReviewFeedbackSweep.guardrail_lifecycle_json(
+      backlog,
+      issue_results: [
+        {
+          "class_key" => "runtime-smoke-coverage",
+          "title" => "[codex] Guardrail backlog: Runtime smoke coverage gap (runtime-smoke-coverage)",
+          "issue_number" => 49,
+          "issue_url" => "https://github.com/evalops/.github/issues/49",
+          "action" => "updated"
+        }
+      ],
+      generated_at: Time.utc(2026, 5, 10, 5, 45, 0)
+    )
+
+    assert_equal "evalops.review_feedback_guardrail_lifecycle.v1", lifecycle.fetch("schema_version")
+    assert_equal "evalops.review_feedback_guardrail_backlog.v1", lifecycle.fetch("source_schema_version")
+    assert_equal "2026-05-10T05:45:00Z", lifecycle.fetch("generated_at")
+    assert_equal 1, lifecycle.fetch("class_count")
+    assert_equal 1, lifecycle.fetch("issue_count")
+    assert_equal "updated", lifecycle.fetch("issues").first.fetch("action")
+
+    JSON.parse(JSON.pretty_generate(lifecycle))
+  end
+
+  def test_issue_number_from_url_extracts_github_issue_number
+    assert_equal 49, EvalOpsReviewFeedbackSweep.issue_number_from_url("https://github.com/evalops/.github/issues/49")
+    assert_nil EvalOpsReviewFeedbackSweep.issue_number_from_url("https://github.com/evalops/.github/pull/49")
+  end
+
   def test_body_first_line_skips_codex_review_boilerplate
     body = <<~BODY
 

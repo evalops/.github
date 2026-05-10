@@ -47,6 +47,8 @@ jobs:
             --json-output review-feedback-ledger.json \
             --guardrail-backlog-output review-feedback-guardrail-backlog.md \
             --guardrail-backlog-json-output review-feedback-guardrail-backlog.json \
+            --guardrail-issue-repo evalops/.github \
+            --guardrail-lifecycle-json-output review-feedback-guardrail-lifecycle.json \
             > review-feedback-sentinel.md
           status=$?
           cat review-feedback-sentinel.md >> "${GITHUB_STEP_SUMMARY}"
@@ -80,5 +82,6 @@ jobs:
           path: |
             review-feedback-guardrail-backlog.md
             review-feedback-guardrail-backlog.json
+            review-feedback-guardrail-lifecycle.json
           if-no-files-found: error
           retention-days: 30
