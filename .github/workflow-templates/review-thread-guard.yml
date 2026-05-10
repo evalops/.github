@@ -20,3 +20,4 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
       min_severity: high
       guard_ref: 1a8d8e42854b0d13818d7c46fc689613aa5bb271
+      settle_seconds: "90"

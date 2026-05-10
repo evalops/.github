@@ -124,6 +124,41 @@ class CheckPrReviewThreadsTest < Minitest::Test
     assert_equal ["T1"], threads.map { |thread| thread.fetch(:id) }
   end
 
+  def test_merge_review_thread_nodes_is_nil_safe_for_partial_graphql_payloads
+    partial_payloads = [
+      nil,
+      {},
+      { "data" => nil },
+      { "data" => {} },
+      { "data" => { "repository" => nil } },
+      { "data" => { "repository" => {} } },
+      { "data" => { "repository" => { "pullRequest" => nil } } },
+      { "data" => { "repository" => { "pullRequest" => {} } } },
+      { "data" => { "repository" => { "pullRequest" => { "reviewThreads" => nil } } } }
+    ]
+
+    partial_payloads.each do |payload|
+      merged = EvalOpsReviewThreadGuard.merge_review_thread_nodes(payload, [thread("T1", resolved: false, outdated: false, body: "**High Severity** broken")])
+
+      assert_equal ["T1"], merged.dig("data", "repository", "pullRequest", "reviewThreads", "nodes").map { |node| node.fetch("id") }
+    end
+  end
+
+  def test_merge_review_thread_nodes_survives_random_sparse_payload_shapes
+    random = Random.new(12_345)
+    250.times do
+      payload = random_payload(random, depth: 0)
+      nodes = random.rand(3).times.map do |index|
+        thread("T#{index}", resolved: false, outdated: false, body: "**High Severity** broken")
+      end
+
+      merged = EvalOpsReviewThreadGuard.merge_review_thread_nodes(payload, nodes)
+
+      assert_equal nodes, merged.dig("data", "repository", "pullRequest", "reviewThreads", "nodes")
+      assert_kind_of Hash, merged.dig("data", "repository", "pullRequest", "reviewThreads")
+    end
+  end
+
   private
 
   def payload_with(comments: [], reviews: [], threads: [])
@@ -158,5 +193,25 @@ class CheckPrReviewThreadsTest < Minitest::Test
       "body" => body,
       "url" => url
     }
+  end
+
+  def random_payload(random, depth:)
+    return random_leaf(random) if depth > 4
+
+    case random.rand(5)
+    when 0
+      nil
+    when 1
+      random_leaf(random)
+    else
+      keys = %w[data repository pullRequest reviewThreads nodes pageInfo comments reviews body]
+      random.rand(0..4).times.each_with_object({}) do |_index, hash|
+        hash[keys.sample(random: random)] = random_payload(random, depth: depth + 1)
+      end
+    end
+  end
+
+  def random_leaf(random)
+    [nil, true, false, random.rand(100), "value", []].sample(random: random)
   end
 end
