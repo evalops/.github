@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: read
 
 jobs:
@@ -42,11 +43,11 @@ jobs:
             --since-hours "${SINCE_HOURS}" \
             --pr-limit "${PR_LIMIT}" \
             --min-severity "${MIN_SEVERITY}" \
-            --dry-run \
             --json-output review-feedback-30d-ledger.json \
             --guardrail-backlog-output review-feedback-30d-guardrail-backlog.md \
             --guardrail-backlog-json-output review-feedback-30d-guardrail-backlog.json \
             --guardrail-lifecycle-json-output review-feedback-30d-guardrail-lifecycle.json \
+            --weekly-report-issue-repo evalops/.github \
             > review-feedback-30d-summary.md
           status=$?
           cat review-feedback-30d-summary.md >> "${GITHUB_STEP_SUMMARY}"
