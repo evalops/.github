@@ -34,6 +34,37 @@ class CheckPrReviewThreadsTest < Minitest::Test
     assert_equal ["T1"], threads.map { |thread| thread.fetch(:id) }
   end
 
+  def test_detects_severity_markers_on_later_thread_comments
+    payload = {
+      "data" => {
+        "repository" => {
+          "pullRequest" => {
+            "reviewThreads" => {
+              "nodes" => [
+                thread(
+                  "T1",
+                  resolved: false,
+                  outdated: false,
+                  body: "initial note",
+                  comments: [
+                    comment("initial note", url: "https://github.com/evalops/example/pull/1#discussion-1"),
+                    comment("**High Severity** follow-up", url: "https://github.com/evalops/example/pull/1#discussion-2")
+                  ]
+                )
+              ]
+            }
+          }
+        }
+      }
+    }
+
+    threads = EvalOpsReviewThreadGuard.unresolved_threads(payload, min_severity: "high")
+
+    assert_equal ["T1"], threads.map { |thread| thread.fetch(:id) }
+    assert_equal "high", threads.first.fetch(:severity)
+    assert_equal "https://github.com/evalops/example/pull/1#discussion-2", threads.first.fetch(:url)
+  end
+
   def test_can_include_outdated_threads_when_requested
     payload = {
       "data" => {
@@ -60,7 +91,7 @@ class CheckPrReviewThreadsTest < Minitest::Test
 
   private
 
-  def thread(id, resolved:, outdated:, body:)
+  def thread(id, resolved:, outdated:, body:, comments: nil)
     {
       "id" => id,
       "isResolved" => resolved,
@@ -68,13 +99,15 @@ class CheckPrReviewThreadsTest < Minitest::Test
       "path" => "app/main.go",
       "line" => 42,
       "comments" => {
-        "nodes" => [
-          {
-            "body" => body,
-            "url" => "https://github.com/evalops/example/pull/1#discussion"
-          }
-        ]
+        "nodes" => comments || [comment(body)]
       }
+    }
+  end
+
+  def comment(body, url: "https://github.com/evalops/example/pull/1#discussion")
+    {
+      "body" => body,
+      "url" => url
     }
   end
 end

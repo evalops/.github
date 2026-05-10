@@ -28,6 +28,16 @@ module EvalOpsReviewThreadGuard
     "none"
   end
 
+  def severity_comment(comments)
+    candidates = Array(comments).each_with_object([]) do |comment, matches|
+      detected = severity(comment["body"])
+      next matches if SEVERITY_RANK.fetch(detected) <= SEVERITY_RANK.fetch("none")
+
+      matches << [detected, comment]
+    end
+    candidates.max_by { |detected, _comment| SEVERITY_RANK.fetch(detected) }
+  end
+
   def unresolved_threads(payload, min_severity: "high", include_outdated: false)
     threshold = SEVERITY_RANK.fetch(min_severity)
     nodes = payload.dig("data", "repository", "pullRequest", "reviewThreads", "nodes") || []
@@ -35,8 +45,9 @@ module EvalOpsReviewThreadGuard
       next matches if thread["isResolved"]
       next matches if thread["isOutdated"] && !include_outdated
 
-      comment = Array(thread.dig("comments", "nodes")).first || {}
-      detected = severity(comment["body"])
+      detected, comment = severity_comment(thread.dig("comments", "nodes"))
+      comment ||= {}
+      detected ||= "none"
       next matches if SEVERITY_RANK.fetch(detected) < threshold
 
       matches << {
@@ -53,17 +64,21 @@ module EvalOpsReviewThreadGuard
 
   def graphql_query
     <<~GRAPHQL
-      query($owner:String!,$repo:String!,$number:Int!) {
+      query($owner:String!,$repo:String!,$number:Int!,$after:String) {
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$number) {
-            reviewThreads(first:100) {
+            reviewThreads(first:100, after:$after) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
               nodes {
                 id
                 isResolved
                 isOutdated
                 path
                 line
-                comments(first:1) {
+                comments(first:20) {
                   nodes {
                     body
                     url
@@ -79,22 +94,41 @@ module EvalOpsReviewThreadGuard
 
   def fetch_payload(repo:, pr:)
     owner, name = repo.split("/", 2)
-    stdout, stderr, status = Open3.capture3(
-      "gh",
-      "api",
-      "graphql",
-      "-f",
-      "owner=#{owner}",
-      "-f",
-      "repo=#{name}",
-      "-F",
-      "number=#{pr}",
-      "-f",
-      "query=#{graphql_query}"
-    )
-    raise "gh api graphql failed: #{stderr.strip}" unless status.success?
+    nodes = []
+    cursor = nil
+    first_payload = nil
 
-    JSON.parse(stdout)
+    loop do
+      args = [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        "owner=#{owner}",
+        "-f",
+        "repo=#{name}",
+        "-F",
+        "number=#{pr}",
+        "-f",
+        "query=#{graphql_query}"
+      ]
+      args += ["-f", "after=#{cursor}"] if cursor
+      stdout, stderr, status = Open3.capture3(*args)
+      raise "gh api graphql failed: #{stderr.strip}" unless status.success?
+
+      payload = JSON.parse(stdout)
+      first_payload ||= payload
+      connection = payload.dig("data", "repository", "pullRequest", "reviewThreads") || {}
+      nodes.concat(Array(connection["nodes"]))
+      page_info = connection["pageInfo"] || {}
+      break unless page_info["hasNextPage"]
+
+      cursor = page_info["endCursor"]
+      raise "gh api graphql failed: missing reviewThreads endCursor" if cursor.to_s.empty?
+    end
+
+    first_payload["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"] = nodes
+    first_payload
   end
 
   def annotation(thread)
