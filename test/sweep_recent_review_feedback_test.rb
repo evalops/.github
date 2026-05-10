@@ -163,6 +163,32 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     JSON.parse(JSON.pretty_generate(backlog))
   end
 
+  def test_guardrail_backlog_keeps_security_secret_feedback_reachable
+    security_class = EvalOpsReviewFeedbackSweep.guardrail_class(
+      {
+        "repo" => "evalops/fathom",
+        "pr_title" => "notarization: configure credentials",
+        "path" => "scripts/bootstrap-notary-credentials.py",
+        "body_first_line" => "Credential secret can shadow the API key token",
+        "feedback_class" => "review_thread",
+        "kind" => "review_thread"
+      }
+    )
+    config_class = EvalOpsReviewFeedbackSweep.guardrail_class(
+      {
+        "repo" => "evalops/deploy",
+        "pr_title" => "deploy: validate k8s selector YAML",
+        "path" => "k8s/ensemble/worker-deployment.yaml",
+        "body_first_line" => "Kubernetes desired-state selector is not validated",
+        "feedback_class" => "review_thread",
+        "kind" => "review_thread"
+      }
+    )
+
+    assert_equal "security-authz", security_class.fetch("key")
+    assert_equal "configuration-safety", config_class.fetch("key")
+  end
+
   def test_guardrail_backlog_records_empty_ledgers
     backlog = EvalOpsReviewFeedbackSweep.guardrail_backlog_json(
       {
