@@ -189,6 +189,32 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_equal "configuration-safety", config_class.fetch("key")
   end
 
+  def test_guardrail_backlog_classifies_parser_and_visual_capture_feedback
+    parser_class = EvalOpsReviewFeedbackSweep.guardrail_class(
+      {
+        "repo" => "evalops/deploy",
+        "pr_title" => "fix: harden Ensemble checksum guardrail parsing",
+        "path" => nil,
+        "body_first_line" => "Parse real CLI flags instead of substring matching",
+        "feedback_class" => "top_level_pr_comment",
+        "kind" => "pr_comment"
+      }
+    )
+    visual_class = EvalOpsReviewFeedbackSweep.guardrail_class(
+      {
+        "repo" => "evalops/fathom",
+        "pr_title" => "capture: add native perception provider",
+        "path" => "macos/FathomCore/Sources/FathomCore/NativePerceptionProvider.swift",
+        "body_first_line" => "Visual sampler error prevents entire frame capture",
+        "feedback_class" => "review_thread",
+        "kind" => "review_thread"
+      }
+    )
+
+    assert_equal "parser-cli-contract", parser_class.fetch("key")
+    assert_equal "visual-capture-resilience", visual_class.fetch("key")
+  end
+
   def test_guardrail_backlog_records_empty_ledgers
     backlog = EvalOpsReviewFeedbackSweep.guardrail_backlog_json(
       {
@@ -293,6 +319,56 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_nil EvalOpsReviewFeedbackSweep.issue_number_from_url("https://github.com/evalops/.github/pull/49")
   end
 
+  def test_guardrail_issue_key_from_title_extracts_stable_class_key
+    assert_equal(
+      "parser-cli-contract",
+      EvalOpsReviewFeedbackSweep.guardrail_issue_key_from_title("[codex] Guardrail backlog: Parser and CLI contract drift (parser-cli-contract)")
+    )
+    assert_nil EvalOpsReviewFeedbackSweep.guardrail_issue_key_from_title("Parser and CLI contract drift (parser-cli-contract)")
+  end
+
+  def test_close_stale_guardrail_class_issues_closes_only_missing_classes
+    backlog = {
+      "classes" => [
+        {
+          "key" => "parser-cli-contract"
+        }
+      ]
+    }
+    list_payload = [
+      {
+        "number" => 48,
+        "title" => "[codex] Guardrail backlog: Other feedback (other-feedback)",
+        "url" => "https://github.com/evalops/.github/issues/48"
+      },
+      {
+        "number" => 49,
+        "title" => "[codex] Guardrail backlog: Parser and CLI contract drift (parser-cli-contract)",
+        "url" => "https://github.com/evalops/.github/issues/49"
+      }
+    ]
+
+    handler = lambda do |args, _input|
+      if args[0, 2] == ["issue", "list"]
+        [JSON.generate(list_payload), "", success_status]
+      elsif args[0, 3] == ["issue", "close", "48"]
+        ["", "", success_status]
+      else
+        flunk("unexpected gh call: #{args.inspect}")
+      end
+    end
+    results = nil
+
+    calls = with_stubbed_gh(handler) do
+      results = EvalOpsReviewFeedbackSweep.close_stale_guardrail_class_issues(repo: "evalops/.github", backlog: backlog)
+    end
+
+    assert_equal 1, results.length
+    assert_equal "other-feedback", results.first.fetch("class_key")
+    assert_equal "closed_stale", results.first.fetch("action")
+    assert_equal ["issue", "close", "48"], calls.last.first(3)
+  end
+
   def test_body_first_line_skips_codex_review_boilerplate
     body = <<~BODY
 
@@ -305,5 +381,30 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     BODY
 
     assert_equal "Roll back tx before loading idempotent receipt", EvalOpsReviewFeedbackSweep.body_first_line(body)
+  end
+
+  private
+
+  def success_status
+    Object.new.tap do |status|
+      def status.success?
+        true
+      end
+    end
+  end
+
+  def with_stubbed_gh(handler)
+    original = EvalOpsReviewFeedbackSweep.method(:gh)
+    calls = []
+    EvalOpsReviewFeedbackSweep.define_singleton_method(:gh) do |*args, input: nil|
+      calls << args
+      handler.call(args, input)
+    end
+    yield calls
+    calls
+  ensure
+    EvalOpsReviewFeedbackSweep.define_singleton_method(:gh) do |*args, input: nil|
+      original.call(*args, input: input)
+    end
   end
 end
