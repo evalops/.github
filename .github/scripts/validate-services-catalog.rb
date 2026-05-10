@@ -85,6 +85,9 @@ services.each do |name, service|
   unless proto_consumer == true || proto_consumer == false
     error(errors, name, "proto_consumer must be true or false when present")
   end
+  if proto_consumer == true && depends_on.is_a?(Array) && !depends_on.include?("proto")
+    error(errors, name, "proto_consumer services must include proto in depends_on")
+  end
 end
 
 if errors.any?

@@ -248,7 +248,7 @@ services:
     language: go
     tier: standard
     runtime: gke
-    depends_on: [service-runtime]
+    depends_on: [proto, service-runtime]
     proto_consumer: true
     repo: evalops/siphon
 
