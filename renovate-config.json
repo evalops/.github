@@ -32,6 +32,21 @@
       "addLabels": ["major"]
     },
     {
+      "description": "Require explicit approval for ESLint ecosystem updates that can change config export shape.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "@eslint/**",
+        "@typescript-eslint/**",
+        "eslint",
+        "eslint-*",
+        "eslint-plugin-*",
+        "typescript-eslint"
+      ],
+      "matchUpdateTypes": ["minor", "major"],
+      "dependencyDashboardApproval": true,
+      "addLabels": ["eslint", "config-sensitive"]
+    },
+    {
       "description": "Automerge patch and digest maintenance after CI passes.",
       "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
       "automerge": true,

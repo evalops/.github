@@ -19,6 +19,9 @@ Rules:
 - Read applicable `AGENTS.md` files before judging touched paths.
 - Use live GitHub context when available: PR body, labels, checks, review
   threads, and recent CI failures.
+- Treat unresolved, non-outdated high-priority review threads as blockers. Do
+  not assume a later summary comment addressed them unless the thread itself is
+  resolved or the current diff makes it stale.
 - Report only issues you would leave as review comments for a human maintainer.
 - Use paths and line ranges from the pull request head side.
 - If the patch is clean, return an empty `findings` array and explain the

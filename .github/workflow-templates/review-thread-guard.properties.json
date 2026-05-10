@@ -1,0 +1,6 @@
+{
+  "name": "Review thread guard",
+  "description": "Fail pull requests that still have unresolved high-priority review feedback.",
+  "iconName": "octicon stop",
+  "categories": ["Automation", "Code review"]
+}

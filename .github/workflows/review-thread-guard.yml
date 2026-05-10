@@ -1,0 +1,65 @@
+name: review-thread-guard
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "Pull request number to inspect"
+        required: true
+        type: string
+      min_severity:
+        description: "Minimum severity to block on"
+        required: false
+        default: "high"
+        type: string
+      runner_label:
+        description: "Runner label used for the validation job"
+        required: false
+        type: string
+        default: ubuntu-latest
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Repository to inspect, as owner/name"
+        required: false
+        type: string
+      pr_number:
+        description: "Pull request number to inspect"
+        required: true
+        type: string
+      min_severity:
+        description: "Minimum severity to block on"
+        required: false
+        default: "high"
+        type: choice
+        options:
+          - high
+          - p1
+          - p0
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  unresolved-review-threads:
+    runs-on: ${{ inputs.runner_label || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: evalops/.github
+          ref: main
+          path: evalops-github
+
+      - name: Fail on unresolved high-priority review threads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ inputs.repo || github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MIN_SEVERITY: ${{ inputs.min_severity || 'high' }}
+        run: |
+          ruby evalops-github/.github/scripts/check-pr-review-threads.rb \
+            --repo "${TARGET_REPO}" \
+            --pr "${PR_NUMBER}" \
+            --min-severity "${MIN_SEVERITY}"

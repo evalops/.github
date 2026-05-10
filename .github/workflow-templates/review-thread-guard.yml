@@ -1,0 +1,17 @@
+name: Review thread guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  unresolved-review-threads:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    uses: evalops/.github/.github/workflows/review-thread-guard.yml@main
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      min_severity: high
