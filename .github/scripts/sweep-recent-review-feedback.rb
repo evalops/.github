@@ -739,7 +739,41 @@ module EvalOpsReviewFeedbackSweep
     }
   end
 
-  def weekly_guardrail_report_markdown(backlog, lifecycle: nil, generated_at: Time.now.utc, top_limit: 5)
+  def repeat_rate_metrics(ledger, generated_at: Time.now.utc, bucket_days: 7)
+    current_start = generated_at.utc - (bucket_days * 24 * 60 * 60)
+    previous_start = generated_at.utc - (bucket_days * 2 * 24 * 60 * 60)
+    buckets = Hash.new { |hash, key| hash[key] = { "current" => 0, "previous" => 0 } }
+    Array(ledger.fetch("findings")).each do |finding|
+      merged_at = Time.parse(finding.fetch("merged_at")).utc
+      next if merged_at < previous_start || merged_at > generated_at.utc
+
+      class_key = guardrail_class(finding).fetch("key")
+      bucket = merged_at >= current_start ? "current" : "previous"
+      buckets[class_key][bucket] += 1
+    rescue ArgumentError, KeyError
+      next
+    end
+
+    buckets.map do |class_key, counts|
+      current = counts.fetch("current")
+      previous = counts.fetch("previous")
+      delta = current - previous
+      change_percent = if previous.zero?
+        current.zero? ? 0 : nil
+      else
+        ((delta.to_f / previous) * 100).round
+      end
+      {
+        "class_key" => class_key,
+        "current_count" => current,
+        "previous_count" => previous,
+        "delta" => delta,
+        "change_percent" => change_percent
+      }
+    end.sort_by { |entry| [-entry.fetch("current_count"), -entry.fetch("previous_count"), entry.fetch("class_key")] }
+  end
+
+  def weekly_guardrail_report_markdown(backlog, lifecycle: nil, ledger: nil, generated_at: Time.now.utc, top_limit: 5)
     classes = backlog.fetch("classes")
     repo_counts = classes.each_with_object(Hash.new(0)) do |entry, counts|
       entry.fetch("repos").each do |repo|
@@ -749,6 +783,7 @@ module EvalOpsReviewFeedbackSweep
       end
     end.sort_by { |repo, count| [-count, repo] }
     prevented = Array(lifecycle&.fetch("issues", nil)).select { |issue| issue["action"] == "already_closed" }
+    repeat_rates = ledger ? repeat_rate_metrics(ledger, generated_at: generated_at) : []
     active = classes.first(top_limit)
 
     lines = [
@@ -793,6 +828,24 @@ module EvalOpsReviewFeedbackSweep
     )
     repo_counts.first(top_limit).each do |repo, count|
       lines << "| #{repo} | #{count} |"
+    end
+
+    lines.concat(
+      [
+        "",
+        "## Repeat-rate trend",
+        "",
+        "| Class | Current 7d | Previous 7d | Delta | Change |",
+        "| --- | ---: | ---: | ---: | ---: |"
+      ]
+    )
+    if repeat_rates.empty?
+      lines << "| _No dated findings in the last two 7-day buckets_ | 0 | 0 | 0 | 0% |"
+    else
+      repeat_rates.first(top_limit).each do |entry|
+        change = entry.fetch("change_percent").nil? ? "new" : "#{entry.fetch("change_percent")}%"
+        lines << "| `#{entry.fetch("class_key")}` | #{entry.fetch("current_count")} | #{entry.fetch("previous_count")} | #{entry.fetch("delta")} | #{change} |"
+      end
     end
 
     lines.concat(
@@ -948,7 +1001,7 @@ if $PROGRAM_NAME == __FILE__
   end
 
   if options[:weekly_report_issue_repo] && !options.fetch(:dry_run)
-    report_body = EvalOpsReviewFeedbackSweep.weekly_guardrail_report_markdown(backlog || EvalOpsReviewFeedbackSweep.guardrail_backlog_json(ledger), lifecycle: lifecycle)
+    report_body = EvalOpsReviewFeedbackSweep.weekly_guardrail_report_markdown(backlog || EvalOpsReviewFeedbackSweep.guardrail_backlog_json(ledger), lifecycle: lifecycle, ledger: ledger)
     EvalOpsReviewFeedbackSweep.upsert_issue(
       repo: options.fetch(:weekly_report_issue_repo),
       title: options.fetch(:weekly_report_issue_title),

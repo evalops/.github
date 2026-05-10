@@ -417,10 +417,42 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
         }
       ]
     }
+    ledger = {
+      "findings" => [
+        {
+          "repo" => "evalops/platform",
+          "pr_title" => "proto: regenerate SDKs",
+          "path" => "proto/codex/v1/codex.proto",
+          "body_first_line" => "generated TypeScript SDK is stale",
+          "feedback_class" => "review_thread",
+          "kind" => "review_thread",
+          "merged_at" => "2026-05-09T06:00:00Z"
+        },
+        {
+          "repo" => "evalops/proto",
+          "pr_title" => "buf: add meter event",
+          "path" => "gen/go/meter/v1/event.pb.go",
+          "body_first_line" => "generated Go output was not committed",
+          "feedback_class" => "review_thread",
+          "kind" => "review_thread",
+          "merged_at" => "2026-05-01T06:00:00Z"
+        },
+        {
+          "repo" => "evalops/deploy",
+          "pr_title" => "fix: harden parser",
+          "path" => nil,
+          "body_first_line" => "Parse real CLI flags instead of substring matching",
+          "feedback_class" => "top_level_pr_comment",
+          "kind" => "pr_comment",
+          "merged_at" => "2026-05-08T06:00:00Z"
+        }
+      ]
+    }
 
     report = EvalOpsReviewFeedbackSweep.weekly_guardrail_report_markdown(
       backlog,
       lifecycle: lifecycle,
+      ledger: ledger,
       generated_at: Time.utc(2026, 5, 10, 6, 15, 0)
     )
 
@@ -428,8 +460,54 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_includes report, "<!-- evalops-review-feedback-weekly-report -->"
     assert_includes report, "| 1 | `generated-contract-drift` Generated contract drift | 140 | 2 | evalops/platform, evalops/proto |"
     assert_includes report, "| evalops/platform | 1 |"
+    assert_includes report, "## Repeat-rate trend"
+    assert_includes report, "| `parser-cli-contract` | 1 | 0 | 1 | new |"
+    assert_includes report, "| `generated-contract-drift` | 1 | 1 | 0 | 0% |"
     assert_includes report, "`parser-cli-contract` https://github.com/evalops/.github/issues/50"
     assert_includes report, "`generated-contract-drift`: Add generated-output drift checks."
+  end
+
+  def test_repeat_rate_metrics_buckets_findings_by_merged_at
+    ledger = {
+      "findings" => [
+        {
+          "repo" => "evalops/deploy",
+          "pr_title" => "fix parser",
+          "body_first_line" => "Parse CLI flags",
+          "feedback_class" => "top_level_pr_comment",
+          "kind" => "pr_comment",
+          "merged_at" => "2026-05-09T00:00:00Z"
+        },
+        {
+          "repo" => "evalops/deploy",
+          "pr_title" => "fix parser",
+          "body_first_line" => "Parse CLI args",
+          "feedback_class" => "top_level_pr_comment",
+          "kind" => "pr_comment",
+          "merged_at" => "2026-05-02T00:00:00Z"
+        },
+        {
+          "repo" => "evalops/deploy",
+          "pr_title" => "old parser",
+          "body_first_line" => "Parse CLI command",
+          "feedback_class" => "top_level_pr_comment",
+          "kind" => "pr_comment",
+          "merged_at" => "2026-04-20T00:00:00Z"
+        }
+      ]
+    }
+
+    metrics = EvalOpsReviewFeedbackSweep.repeat_rate_metrics(
+      ledger,
+      generated_at: Time.utc(2026, 5, 10, 0, 0, 0)
+    )
+
+    assert_equal 1, metrics.length
+    assert_equal "parser-cli-contract", metrics.first.fetch("class_key")
+    assert_equal 1, metrics.first.fetch("current_count")
+    assert_equal 1, metrics.first.fetch("previous_count")
+    assert_equal 0, metrics.first.fetch("delta")
+    assert_equal 0, metrics.first.fetch("change_percent")
   end
 
   def test_weekly_guardrail_report_markdown_handles_empty_backlog
