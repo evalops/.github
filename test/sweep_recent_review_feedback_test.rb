@@ -154,6 +154,8 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_equal 2, first.fetch("finding_count")
     assert_equal ["evalops/platform", "evalops/proto"], first.fetch("repos")
     assert_equal "evalops/platform", first.fetch("sample_findings").first.fetch("repo")
+    assert_equal 2, first.fetch("finding_fingerprints").length
+    assert_match(/\A[0-9a-f]{64}\z/, first.fetch("finding_fingerprints").first)
 
     markdown = EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog)
     assert_includes markdown, "# Review feedback guardrail backlog"
@@ -277,6 +279,8 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_includes body, "- Class: `runtime-smoke-coverage`"
     assert_includes body, "- Repos: `evalops/platform`"
     assert_includes body, "Roll back tx before loading idempotent receipt"
+    assert_includes body, "## Finding fingerprints"
+    assert_match(/- `[0-9a-f]{64}`/, body)
     assert_includes body, "The guardrail fails for at least one representative feedback shape listed above."
     assert_includes body, "The issue is closed only after the guardrail has merged"
   end
@@ -325,6 +329,122 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
       EvalOpsReviewFeedbackSweep.guardrail_issue_key_from_title("[codex] Guardrail backlog: Parser and CLI contract drift (parser-cli-contract)")
     )
     assert_nil EvalOpsReviewFeedbackSweep.guardrail_issue_key_from_title("Parser and CLI contract drift (parser-cli-contract)")
+  end
+
+  def test_upsert_guardrail_class_issue_keeps_closed_issue_closed_when_fingerprints_match
+    finding = {
+      "repo" => "evalops/deploy",
+      "pr_number" => 2390,
+      "feedback_url" => "https://github.com/evalops/deploy/pull/2390#issuecomment-1",
+      "path" => nil,
+      "line" => nil,
+      "severity" => "high",
+      "body_sha256" => Digest::SHA256.hexdigest("Parse real CLI flags instead of substring matching"),
+      "body_first_line" => "Parse real CLI flags instead of substring matching"
+    }
+    fingerprint = EvalOpsReviewFeedbackSweep.guardrail_finding_fingerprint(finding)
+    backlog = {
+      "generated_at" => "2026-05-10T05:40:00Z",
+      "merged_since" => "2026-05-09T05:40:00Z",
+      "min_severity" => "high",
+      "classes" => []
+    }
+    entry = {
+      "key" => "parser-cli-contract",
+      "title" => "Parser and CLI contract drift",
+      "score" => 80,
+      "finding_count" => 1,
+      "repos" => ["evalops/deploy"],
+      "recommended_guardrail" => "Add parser-backed tests.",
+      "finding_fingerprints" => [fingerprint],
+      "sample_findings" => [finding]
+    }
+    issue = {
+      "number" => 50,
+      "title" => "[codex] Guardrail backlog: Parser and CLI contract drift (parser-cli-contract)",
+      "state" => "CLOSED",
+      "url" => "https://github.com/evalops/.github/issues/50",
+      "body" => "- `#{fingerprint}`"
+    }
+    handler = lambda do |args, _input|
+      if args[0, 2] == ["issue", "list"]
+        [JSON.generate([issue]), "", success_status]
+      else
+        flunk("unexpected gh call: #{args.inspect}")
+      end
+    end
+
+    result = nil
+    calls = with_stubbed_gh(handler) do
+      result = EvalOpsReviewFeedbackSweep.upsert_guardrail_class_issue(
+        repo: "evalops/.github",
+        backlog: backlog,
+        entry: entry
+      )
+    end
+
+    assert_equal "already_closed", result.fetch("action")
+    assert_equal 50, result.fetch("issue_number")
+    assert_equal 1, calls.length
+  end
+
+  def test_upsert_guardrail_class_issue_reopens_closed_issue_when_fingerprints_change
+    finding = {
+      "repo" => "evalops/deploy",
+      "pr_number" => 2391,
+      "feedback_url" => "https://github.com/evalops/deploy/pull/2391#issuecomment-1",
+      "path" => "scripts/check.py",
+      "line" => 17,
+      "severity" => "high",
+      "body_first_line" => "Parse command flags with the parser"
+    }
+    backlog = {
+      "generated_at" => "2026-05-10T05:40:00Z",
+      "merged_since" => "2026-05-09T05:40:00Z",
+      "min_severity" => "high",
+      "classes" => []
+    }
+    entry = {
+      "key" => "parser-cli-contract",
+      "title" => "Parser and CLI contract drift",
+      "score" => 80,
+      "finding_count" => 1,
+      "repos" => ["evalops/deploy"],
+      "recommended_guardrail" => "Add parser-backed tests.",
+      "sample_findings" => [finding]
+    }
+    issue = {
+      "number" => 50,
+      "title" => "[codex] Guardrail backlog: Parser and CLI contract drift (parser-cli-contract)",
+      "state" => "CLOSED",
+      "url" => "https://github.com/evalops/.github/issues/50",
+      "body" => "- `#{Digest::SHA256.hexdigest("old")}`"
+    }
+    handler = lambda do |args, input|
+      if args[0, 2] == ["issue", "list"]
+        [JSON.generate([issue]), "", success_status]
+      elsif args[0, 3] == ["issue", "reopen", "50"]
+        ["", "", success_status]
+      elsif args[0, 3] == ["issue", "edit", "50"]
+        assert_includes input, "## Finding fingerprints"
+        ["", "", success_status]
+      else
+        flunk("unexpected gh call: #{args.inspect}")
+      end
+    end
+
+    result = nil
+    calls = with_stubbed_gh(handler) do
+      result = EvalOpsReviewFeedbackSweep.upsert_guardrail_class_issue(
+        repo: "evalops/.github",
+        backlog: backlog,
+        entry: entry
+      )
+    end
+
+    assert_equal "reopened", result.fetch("action")
+    assert_equal ["issue", "reopen", "50"], calls[1].first(3)
+    assert_equal ["issue", "edit", "50"], calls[2].first(3)
   end
 
   def test_close_stale_guardrail_class_issues_closes_only_missing_classes

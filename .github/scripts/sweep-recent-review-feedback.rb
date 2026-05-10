@@ -273,6 +273,7 @@ module EvalOpsReviewFeedbackSweep
         "repo_count" => repos.length,
         "repos" => repos,
         "recommended_guardrail" => metadata.fetch("recommended_guardrail"),
+        "finding_fingerprints" => class_findings.map { |finding| guardrail_finding_fingerprint(finding) }.uniq.sort,
         "sample_findings" => class_findings.first(sample_limit).map do |finding|
           finding.slice(
             "repo",
@@ -282,6 +283,7 @@ module EvalOpsReviewFeedbackSweep
             "path",
             "line",
             "severity",
+            "body_sha256",
             "body_first_line"
           )
         end
@@ -377,6 +379,18 @@ module EvalOpsReviewFeedbackSweep
     lines.concat(
       [
         "",
+        "## Finding fingerprints",
+        "",
+        "<!-- evalops-review-feedback-fingerprints:#{current_guardrail_fingerprints(entry).to_a.sort.join(",")} -->"
+      ]
+    )
+    current_guardrail_fingerprints(entry).to_a.sort.each do |fingerprint|
+      lines << "- `#{fingerprint}`"
+    end
+
+    lines.concat(
+      [
+        "",
         "## Acceptance criteria",
         "",
         "- The class has an owner repo and a concrete guardrail location.",
@@ -401,11 +415,35 @@ module EvalOpsReviewFeedbackSweep
       "--limit",
       "10",
       "--json",
-      "number,title,state,url"
+      "number,title,state,url,body"
     )
     raise "gh issue list failed: #{stderr.strip}" unless status.success?
 
     JSON.parse(stdout).find { |issue| issue.fetch("title") == title }
+  end
+
+  def guardrail_finding_fingerprint(finding)
+    Digest::SHA256.hexdigest(
+      [
+        finding.fetch("repo"),
+        finding.fetch("pr_number").to_s,
+        finding["feedback_url"].to_s,
+        finding["path"].to_s,
+        finding["line"].to_s,
+        finding["body_sha256"].to_s.empty? ? Digest::SHA256.hexdigest(finding.fetch("body_first_line", "")) : finding["body_sha256"]
+      ].join("\n")
+    )
+  end
+
+  def guardrail_issue_fingerprints(body)
+    body.to_s.scan(/`([0-9a-f]{64})`/).flatten.to_set
+  end
+
+  def current_guardrail_fingerprints(entry)
+    fingerprints = Array(entry["finding_fingerprints"])
+    return fingerprints.to_set unless fingerprints.empty?
+
+    entry.fetch("sample_findings").map { |finding| guardrail_finding_fingerprint(finding) }.to_set
   end
 
   def guardrail_issue_key_from_title(title)
@@ -424,6 +462,17 @@ module EvalOpsReviewFeedbackSweep
     if issue
       number = issue.fetch("number").to_s
       if issue.fetch("state") == "CLOSED"
+        issue_fingerprints = guardrail_issue_fingerprints(issue.fetch("body", ""))
+        if current_guardrail_fingerprints(entry).subset?(issue_fingerprints)
+          return {
+            "class_key" => entry.fetch("key"),
+            "title" => title,
+            "issue_number" => issue.fetch("number"),
+            "issue_url" => issue.fetch("url"),
+            "action" => "already_closed"
+          }
+        end
+
         gh("issue", "reopen", number, "--repo", repo).then do |_out, err, ok|
           raise "gh issue reopen failed: #{err.strip}" unless ok.success?
         end
