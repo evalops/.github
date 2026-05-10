@@ -51,6 +51,7 @@ module EvalOpsReviewThreadGuard
       next matches if SEVERITY_RANK.fetch(detected) < threshold
 
       matches << {
+        kind: "review_thread",
         id: thread["id"],
         path: thread["path"],
         line: thread["line"],
@@ -62,11 +63,70 @@ module EvalOpsReviewThreadGuard
     end
   end
 
+  def top_level_feedback(payload, min_severity: "high")
+    threshold = SEVERITY_RANK.fetch(min_severity)
+    pull_request = payload.dig("data", "repository", "pullRequest") || {}
+    feedback = []
+    Array(pull_request.dig("comments", "nodes")).each do |comment|
+      detected = severity(comment["body"])
+      next if SEVERITY_RANK.fetch(detected) < threshold
+
+      feedback << {
+        kind: "pr_comment",
+        severity: detected,
+        url: comment["url"],
+        body: comment["body"].to_s,
+        author: comment.dig("author", "login")
+      }
+    end
+    Array(pull_request.dig("reviews", "nodes")).each do |review|
+      detected = severity(review["body"])
+      next if SEVERITY_RANK.fetch(detected) < threshold
+
+      feedback << {
+        kind: "pr_review",
+        severity: detected,
+        url: review["url"],
+        body: review["body"].to_s,
+        author: review.dig("author", "login"),
+        state: review["state"]
+      }
+    end
+    feedback
+  end
+
+  def blocking_feedback(payload, min_severity: "high", include_outdated: false)
+    unresolved_threads(
+      payload,
+      min_severity: min_severity,
+      include_outdated: include_outdated
+    ) + top_level_feedback(payload, min_severity: min_severity)
+  end
+
   def graphql_query
     <<~GRAPHQL
       query($owner:String!,$repo:String!,$number:Int!,$after:String) {
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$number) {
+            comments(first:100) {
+              nodes {
+                author {
+                  login
+                }
+                body
+                url
+              }
+            }
+            reviews(first:100) {
+              nodes {
+                author {
+                  login
+                }
+                body
+                state
+                url
+              }
+            }
             reviewThreads(first:100, after:$after) {
               pageInfo {
                 hasNextPage
@@ -132,6 +192,11 @@ module EvalOpsReviewThreadGuard
   end
 
   def annotation(thread)
+    unless thread[:path]
+      title = "unresolved #{thread.fetch(:severity).upcase} #{thread.fetch(:kind).tr("_", " ")}"
+      return "::error title=#{title}::#{thread.fetch(:url)}"
+    end
+
     location = [thread.fetch(:path), thread[:line]].compact.join(":")
     title = "unresolved #{thread.fetch(:severity).upcase} review thread"
     "::error file=#{thread.fetch(:path)},line=#{thread[:line] || 1},title=#{title}::#{location} #{thread.fetch(:url)}"
@@ -169,20 +234,21 @@ if $PROGRAM_NAME == __FILE__
       EvalOpsReviewThreadGuard.fetch_payload(repo: options.fetch(:repo), pr: options.fetch(:pr))
     end
 
-  threads = EvalOpsReviewThreadGuard.unresolved_threads(
+  feedback = EvalOpsReviewThreadGuard.blocking_feedback(
     payload,
     min_severity: options.fetch(:min_severity),
     include_outdated: options.fetch(:include_outdated)
   )
 
-  if threads.empty?
-    puts "No unresolved review threads at or above #{options.fetch(:min_severity)} severity."
+  if feedback.empty?
+    puts "No unresolved PR feedback at or above #{options.fetch(:min_severity)} severity."
     exit 0
   end
 
-  warn "Found #{threads.length} unresolved review thread(s) at or above #{options.fetch(:min_severity)} severity:"
-  threads.each do |thread|
-    warn "- [#{thread.fetch(:severity)}] #{thread.fetch(:path)}:#{thread[:line] || "?"} #{thread.fetch(:url)}"
+  warn "Found #{feedback.length} unresolved PR feedback item(s) at or above #{options.fetch(:min_severity)} severity:"
+  feedback.each do |thread|
+    location = thread[:path] ? "#{thread.fetch(:path)}:#{thread[:line] || "?"}" : thread.fetch(:kind).to_s
+    warn "- [#{thread.fetch(:severity)}] #{location} #{thread.fetch(:url)}"
     puts EvalOpsReviewThreadGuard.annotation(thread)
   end
   exit 1
