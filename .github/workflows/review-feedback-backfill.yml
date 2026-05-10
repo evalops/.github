@@ -43,6 +43,7 @@ jobs:
           fi
 
       - name: Run review feedback backfill
+        id: backfill
         run: |
           set +e
           ruby .github/scripts/sweep-recent-review-feedback.rb \
@@ -72,7 +73,7 @@ jobs:
           exit "${status}"
 
       - name: Upload review feedback 30-day ledger
-        if: always()
+        if: ${{ always() && steps.backfill.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: review-feedback-30d-ledger
@@ -83,7 +84,7 @@ jobs:
           retention-days: 90
 
       - name: Upload review feedback 30-day guardrail backlog
-        if: always()
+        if: ${{ always() && steps.backfill.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: review-feedback-30d-guardrail-backlog
