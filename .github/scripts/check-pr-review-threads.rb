@@ -103,6 +103,17 @@ module EvalOpsReviewThreadGuard
     ) + top_level_feedback(payload, min_severity: min_severity)
   end
 
+  def merge_review_thread_nodes(payload, nodes)
+    merged = payload.is_a?(Hash) ? payload : {}
+    merged["data"] = {} unless merged["data"].is_a?(Hash)
+    merged["data"]["repository"] = {} unless merged["data"]["repository"].is_a?(Hash)
+    merged["data"]["repository"]["pullRequest"] = {} unless merged["data"]["repository"]["pullRequest"].is_a?(Hash)
+    pull_request = merged["data"]["repository"]["pullRequest"]
+    pull_request["reviewThreads"] = {} unless pull_request["reviewThreads"].is_a?(Hash)
+    pull_request["reviewThreads"]["nodes"] = nodes
+    merged
+  end
+
   def graphql_query
     <<~GRAPHQL
       query($owner:String!,$repo:String!,$number:Int!,$after:String) {
@@ -187,8 +198,7 @@ module EvalOpsReviewThreadGuard
       raise "gh api graphql failed: missing reviewThreads endCursor" if cursor.to_s.empty?
     end
 
-    first_payload["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"] = nodes
-    first_payload
+    merge_review_thread_nodes(first_payload || {}, nodes)
   end
 
   def annotation(thread)

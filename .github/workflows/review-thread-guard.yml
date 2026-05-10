@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: c02a97ba9b92c6b2ac837aab77dc3becb77f301c
+      settle_seconds:
+        description: "Seconds to wait before checking review feedback so bot reviews can finish before auto-merge"
+        required: false
+        type: string
+        default: "90"
   workflow_dispatch:
     inputs:
       repo:
@@ -46,6 +51,11 @@ on:
         required: false
         type: string
         default: c02a97ba9b92c6b2ac837aab77dc3becb77f301c
+      settle_seconds:
+        description: "Seconds to wait before checking review feedback so bot reviews can finish before auto-merge"
+        required: false
+        type: string
+        default: "90"
 
 permissions:
   contents: read
@@ -61,6 +71,22 @@ jobs:
           repository: evalops/.github
           ref: ${{ inputs.guard_ref || 'c02a97ba9b92c6b2ac837aab77dc3becb77f301c' }}
           path: evalops-github
+
+      - name: Let asynchronous review bots settle
+        env:
+          SETTLE_SECONDS: ${{ inputs.settle_seconds || '90' }}
+        run: |
+          set -euo pipefail
+          case "${SETTLE_SECONDS}" in
+            ''|*[!0-9]*)
+              echo "::error::settle_seconds must be a non-negative integer"
+              exit 2
+              ;;
+          esac
+          if [ "${SETTLE_SECONDS}" -gt 0 ]; then
+            echo "Waiting ${SETTLE_SECONDS}s before checking review feedback."
+            sleep "${SETTLE_SECONDS}"
+          fi
 
       - name: Fail on unresolved high-priority review threads
         env:

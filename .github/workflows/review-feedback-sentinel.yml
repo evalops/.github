@@ -1,0 +1,51 @@
+name: Review feedback sentinel
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      since_hours:
+        description: "Merged PR lookback window"
+        required: false
+        default: "72"
+      min_severity:
+        description: "Minimum severity to report"
+        required: false
+        default: "high"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN || github.token }}
+      SINCE_HOURS: ${{ inputs.since_hours || '72' }}
+      MIN_SEVERITY: ${{ inputs.min_severity || 'high' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sweep recent merged PR feedback
+        run: |
+          set +e
+          ruby .github/scripts/sweep-recent-review-feedback.rb \
+            --owner evalops \
+            --since-hours "${SINCE_HOURS}" \
+            --min-severity "${MIN_SEVERITY}" \
+            --issue-repo evalops/.github \
+            > review-feedback-sentinel.md
+          status=$?
+          cat review-feedback-sentinel.md >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${status}" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "${status}" -eq 1 ]; then
+            echo "::warning::recent unresolved review feedback found; issue was updated"
+            exit 0
+          fi
+          exit "${status}"
