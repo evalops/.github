@@ -44,7 +44,7 @@ module EvalOpsReviewFeedbackSweep
     {
       "key" => "configuration-safety",
       "title" => "Configuration safety",
-      "patterns" => [/\bkustomize\b/, /\bkubernetes\b/, /\bk8s\b/, /\bterraform\b/, /\bselector\b/, /\bnamespace\b/, /\bsecret\b/, /\bdesired-state\b/, /\byaml\b/],
+      "patterns" => [/\bkustomize\b/, /\bkubernetes\b/, /\bk8s\b/, /\bterraform\b/, /\bselector\b/, /\bnamespace\b/, /\bdesired-state\b/, /\byaml\b/],
       "recommended_guardrail" => "Add desired-state validation that renders and checks configuration invariants before apply or merge."
     },
     {
