@@ -13,8 +13,10 @@ module EvalOpsReviewFeedbackSweep
   module_function
 
   DEFAULT_TITLE = "[codex] Recent unresolved review feedback"
+  GUARDRAIL_ISSUE_TITLE_PREFIX = "[codex] Guardrail backlog:"
   LEDGER_SCHEMA_VERSION = "evalops.review_feedback_ledger.v1"
   GUARDRAIL_BACKLOG_SCHEMA_VERSION = "evalops.review_feedback_guardrail_backlog.v1"
+  GUARDRAIL_LIFECYCLE_SCHEMA_VERSION = "evalops.review_feedback_guardrail_lifecycle.v1"
 
   GUARDRAIL_CLASSES = [
     {
@@ -326,6 +328,136 @@ module EvalOpsReviewFeedbackSweep
     lines.join("\n")
   end
 
+  def guardrail_issue_title(entry)
+    "#{GUARDRAIL_ISSUE_TITLE_PREFIX} #{entry.fetch("title")} (#{entry.fetch("key")})"
+  end
+
+  def guardrail_issue_body(backlog, entry)
+    lines = [
+      "<!-- evalops-review-feedback-guardrail-issue:#{entry.fetch("key")} -->",
+      "# #{entry.fetch("title")}",
+      "",
+      "This issue tracks a recurring review-feedback class from the EvalOps review feedback sentinel.",
+      "",
+      "- Class: `#{entry.fetch("key")}`",
+      "- Score: `#{entry.fetch("score")}`",
+      "- Findings: `#{entry.fetch("finding_count")}`",
+      "- Repos: `#{entry.fetch("repos").join("`, `")}`",
+      "- Generated at: `#{backlog.fetch("generated_at")}`",
+      "- Window: merged since `#{backlog.fetch("merged_since")}` with minimum severity `#{backlog.fetch("min_severity")}`",
+      "",
+      "## Guardrail to build",
+      "",
+      entry.fetch("recommended_guardrail"),
+      "",
+      "## Representative feedback",
+      ""
+    ]
+
+    entry.fetch("sample_findings").each do |finding|
+      location = finding["path"] ? "#{finding["path"]}:#{finding["line"] || "?"}" : "top-level feedback"
+      lines << "- `#{finding.fetch("severity")}` #{finding.fetch("repo")}##{finding.fetch("pr_number")} #{location}"
+      lines << "  - #{finding.fetch("body_first_line")}" unless finding.fetch("body_first_line", "").empty?
+      lines << "  - #{finding.fetch("feedback_url")}" if finding["feedback_url"]
+    end
+
+    lines.concat(
+      [
+        "",
+        "## Acceptance criteria",
+        "",
+        "- The class has an owner repo and a concrete guardrail location.",
+        "- The guardrail fails for at least one representative feedback shape listed above.",
+        "- The guardrail is wired into the smallest relevant CI or preflight target.",
+        "- The issue is closed only after the guardrail has merged and the feedback sentinel no longer ranks this class as an unaddressed candidate."
+      ]
+    )
+    lines.join("\n")
+  end
+
+  def find_issue_by_title(repo:, title:)
+    stdout, stderr, status = gh(
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "all",
+      "--search",
+      "\"#{title}\" in:title",
+      "--limit",
+      "10",
+      "--json",
+      "number,title,state,url"
+    )
+    raise "gh issue list failed: #{stderr.strip}" unless status.success?
+
+    JSON.parse(stdout).find { |issue| issue.fetch("title") == title }
+  end
+
+  def upsert_guardrail_class_issue(repo:, backlog:, entry:)
+    title = guardrail_issue_title(entry)
+    body = guardrail_issue_body(backlog, entry)
+    issue = find_issue_by_title(repo: repo, title: title)
+
+    if issue
+      number = issue.fetch("number").to_s
+      if issue.fetch("state") == "CLOSED"
+        gh("issue", "reopen", number, "--repo", repo).then do |_out, err, ok|
+          raise "gh issue reopen failed: #{err.strip}" unless ok.success?
+        end
+      end
+      gh("issue", "edit", number, "--repo", repo, input: body).then do |_out, err, ok|
+        raise "gh issue edit failed: #{err.strip}" unless ok.success?
+      end
+      return {
+        "class_key" => entry.fetch("key"),
+        "title" => title,
+        "issue_number" => issue.fetch("number"),
+        "issue_url" => issue.fetch("url"),
+        "action" => issue.fetch("state") == "CLOSED" ? "reopened" : "updated"
+      }
+    end
+
+    gh("issue", "create", "--repo", repo, "--title", title, input: body).then do |out, err, ok|
+      raise "gh issue create failed: #{err.strip}" unless ok.success?
+
+      issue_url = out.strip
+      {
+        "class_key" => entry.fetch("key"),
+        "title" => title,
+        "issue_number" => issue_number_from_url(issue_url),
+        "issue_url" => issue_url,
+        "action" => "created"
+      }.compact
+    end
+  end
+
+  def issue_number_from_url(url)
+    match = url.to_s.match(%r{/issues/(\d+)\z})
+    match[1].to_i if match
+  end
+
+  def upsert_guardrail_class_issues(repo:, backlog:)
+    backlog.fetch("classes").map do |entry|
+      upsert_guardrail_class_issue(repo: repo, backlog: backlog, entry: entry)
+    end
+  end
+
+  def guardrail_lifecycle_json(backlog, issue_results:, generated_at: Time.now.utc)
+    {
+      "schema_version" => GUARDRAIL_LIFECYCLE_SCHEMA_VERSION,
+      "source_schema_version" => backlog.fetch("schema_version"),
+      "generated_at" => generated_at.utc.iso8601,
+      "owner" => backlog.fetch("owner"),
+      "merged_since" => backlog.fetch("merged_since"),
+      "min_severity" => backlog.fetch("min_severity"),
+      "class_count" => backlog.fetch("class_count"),
+      "issue_count" => issue_results.length,
+      "issues" => issue_results
+    }
+  end
+
   def upsert_issue(repo:, title:, body:)
     stdout, stderr, status = gh(
       "issue",
@@ -369,6 +501,8 @@ if $PROGRAM_NAME == __FILE__
     json_output: nil,
     guardrail_backlog_output: nil,
     guardrail_backlog_json_output: nil,
+    guardrail_issue_repo: nil,
+    guardrail_lifecycle_json_output: nil,
     pr_limit: 100,
     dry_run: false
   }
@@ -383,6 +517,8 @@ if $PROGRAM_NAME == __FILE__
     parser.on("--json-output PATH", "Write machine-readable feedback ledger JSON to this path") { |value| options[:json_output] = value }
     parser.on("--guardrail-backlog-output PATH", "Write ranked guardrail backlog markdown to this path") { |value| options[:guardrail_backlog_output] = value }
     parser.on("--guardrail-backlog-json-output PATH", "Write ranked guardrail backlog JSON to this path") { |value| options[:guardrail_backlog_json_output] = value }
+    parser.on("--guardrail-issue-repo OWNER/REPO", "Create or update one stable issue per ranked guardrail class") { |value| options[:guardrail_issue_repo] = value }
+    parser.on("--guardrail-lifecycle-json-output PATH", "Write guardrail issue lifecycle JSON to this path") { |value| options[:guardrail_lifecycle_json_output] = value }
     parser.on("--dry-run", "Print report and skip issue writes") { options[:dry_run] = true }
   end.parse!
 
@@ -416,10 +552,16 @@ if $PROGRAM_NAME == __FILE__
     File.write(options.fetch(:json_output), "#{JSON.pretty_generate(ledger)}\n")
   end
 
-  if options[:guardrail_backlog_output] || options[:guardrail_backlog_json_output]
+  if options[:guardrail_backlog_output] || options[:guardrail_backlog_json_output] || options[:guardrail_issue_repo] || options[:guardrail_lifecycle_json_output]
     backlog = EvalOpsReviewFeedbackSweep.guardrail_backlog_json(ledger)
     File.write(options.fetch(:guardrail_backlog_json_output), "#{JSON.pretty_generate(backlog)}\n") if options[:guardrail_backlog_json_output]
     File.write(options.fetch(:guardrail_backlog_output), "#{EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog)}\n") if options[:guardrail_backlog_output]
+    issue_results = []
+    issue_results = EvalOpsReviewFeedbackSweep.upsert_guardrail_class_issues(repo: options.fetch(:guardrail_issue_repo), backlog: backlog) if backlog.fetch("classes").any? && options[:guardrail_issue_repo] && !options.fetch(:dry_run)
+    if options[:guardrail_lifecycle_json_output]
+      lifecycle = EvalOpsReviewFeedbackSweep.guardrail_lifecycle_json(backlog, issue_results: issue_results)
+      File.write(options.fetch(:guardrail_lifecycle_json_output), "#{JSON.pretty_generate(lifecycle)}\n")
+    end
   end
 
   if items.any? && options[:issue_repo] && !options.fetch(:dry_run)
