@@ -14,6 +14,7 @@ module EvalOpsReviewFeedbackSweep
   module_function
 
   DEFAULT_TITLE = "[codex] Recent unresolved review feedback"
+  DEFAULT_WEEKLY_REPORT_TITLE = "[codex] Weekly review feedback guardrail report"
   GUARDRAIL_ISSUE_TITLE_PREFIX = "[codex] Guardrail backlog:"
   REPO_GUARDRAIL_ISSUE_TITLE_PREFIX = "[codex] Guardrail candidate:"
   LEDGER_SCHEMA_VERSION = "evalops.review_feedback_ledger.v1"
@@ -738,6 +739,91 @@ module EvalOpsReviewFeedbackSweep
     }
   end
 
+  def weekly_guardrail_report_markdown(backlog, lifecycle: nil, generated_at: Time.now.utc, top_limit: 5)
+    classes = backlog.fetch("classes")
+    repo_counts = classes.each_with_object(Hash.new(0)) do |entry, counts|
+      entry.fetch("repos").each do |repo|
+        counts[repo] += Array(entry.fetch("repo_fingerprints", {})[repo]).length
+        counts[repo] += repo_sample_findings(entry, repo).length if counts[repo].zero?
+        counts[repo] += entry.fetch("finding_count") if counts[repo].zero?
+      end
+    end.sort_by { |repo, count| [-count, repo] }
+    prevented = Array(lifecycle&.fetch("issues", nil)).select { |issue| issue["action"] == "already_closed" }
+    active = classes.first(top_limit)
+
+    lines = [
+      "# Weekly review feedback guardrail report",
+      "",
+      "- Generated at: `#{generated_at.utc.iso8601}`",
+      "- Owner: `#{backlog.fetch("owner")}`",
+      "- Window: merged since `#{backlog.fetch("merged_since")}` with minimum severity `#{backlog.fetch("min_severity")}`",
+      "- Source findings: `#{backlog.fetch("source_finding_count")}`",
+      "- Ranked classes: `#{backlog.fetch("class_count")}`",
+      "",
+      "<!-- evalops-review-feedback-weekly-report -->"
+    ]
+
+    if classes.empty?
+      lines << ""
+      lines << "No guardrail candidates found in this window."
+      return lines.join("\n")
+    end
+
+    lines.concat(
+      [
+        "",
+        "## Top guardrail candidates",
+        "",
+        "| Rank | Class | Score | Findings | Repos | Next guardrail |",
+        "| --- | --- | ---: | ---: | --- | --- |"
+      ]
+    )
+    active.each_with_index do |entry, index|
+      lines << "| #{index + 1} | `#{entry.fetch("key")}` #{entry.fetch("title")} | #{entry.fetch("score")} | #{entry.fetch("finding_count")} | #{entry.fetch("repos").join(", ")} | #{entry.fetch("recommended_guardrail")} |"
+    end
+
+    lines.concat(
+      [
+        "",
+        "## Repos with feedback",
+        "",
+        "| Repo | Findings in ranked classes |",
+        "| --- | ---: |"
+      ]
+    )
+    repo_counts.first(top_limit).each do |repo, count|
+      lines << "| #{repo} | #{count} |"
+    end
+
+    lines.concat(
+      [
+        "",
+        "## Newly prevented or suppressed",
+        ""
+      ]
+    )
+    if prevented.empty?
+      lines << "No already-closed guardrail fingerprints were seen in this run."
+    else
+      prevented.first(top_limit).each do |issue|
+        lines << "- `#{issue.fetch("class_key")}` #{issue.fetch("issue_url")}"
+      end
+    end
+
+    lines.concat(
+      [
+        "",
+        "## Next actions",
+        ""
+      ]
+    )
+    active.each do |entry|
+      lines << "- `#{entry.fetch("key")}`: #{entry.fetch("recommended_guardrail")}"
+    end
+
+    lines.join("\n")
+  end
+
   def upsert_issue(repo:, title:, body:)
     stdout, stderr, status = gh(
       "issue",
@@ -784,6 +870,8 @@ if $PROGRAM_NAME == __FILE__
     guardrail_issue_repo: nil,
     guardrail_lifecycle_json_output: nil,
     guardrail_repo_issues: false,
+    weekly_report_issue_repo: nil,
+    weekly_report_issue_title: EvalOpsReviewFeedbackSweep::DEFAULT_WEEKLY_REPORT_TITLE,
     pr_limit: 100,
     dry_run: false
   }
@@ -801,6 +889,8 @@ if $PROGRAM_NAME == __FILE__
     parser.on("--guardrail-issue-repo OWNER/REPO", "Create or update one stable issue per ranked guardrail class") { |value| options[:guardrail_issue_repo] = value }
     parser.on("--guardrail-repo-issues", "Create or update repo-local guardrail candidate issues for each ranked class/repo pair") { options[:guardrail_repo_issues] = true }
     parser.on("--guardrail-lifecycle-json-output PATH", "Write guardrail issue lifecycle JSON to this path") { |value| options[:guardrail_lifecycle_json_output] = value }
+    parser.on("--weekly-report-issue-repo OWNER/REPO", "Create or comment on this issue repo with the guardrail report") { |value| options[:weekly_report_issue_repo] = value }
+    parser.on("--weekly-report-issue-title TITLE", "Issue title for the guardrail report") { |value| options[:weekly_report_issue_title] = value }
     parser.on("--dry-run", "Print report and skip issue writes") { options[:dry_run] = true }
   end.parse!
 
@@ -834,7 +924,9 @@ if $PROGRAM_NAME == __FILE__
     File.write(options.fetch(:json_output), "#{JSON.pretty_generate(ledger)}\n")
   end
 
-  if options[:guardrail_backlog_output] || options[:guardrail_backlog_json_output] || options[:guardrail_issue_repo] || options[:guardrail_lifecycle_json_output]
+  backlog = nil
+  lifecycle = nil
+  if options[:guardrail_backlog_output] || options[:guardrail_backlog_json_output] || options[:guardrail_issue_repo] || options[:guardrail_lifecycle_json_output] || options[:weekly_report_issue_repo]
     backlog = EvalOpsReviewFeedbackSweep.guardrail_backlog_json(ledger)
     File.write(options.fetch(:guardrail_backlog_json_output), "#{JSON.pretty_generate(backlog)}\n") if options[:guardrail_backlog_json_output]
     File.write(options.fetch(:guardrail_backlog_output), "#{EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog)}\n") if options[:guardrail_backlog_output]
@@ -852,6 +944,16 @@ if $PROGRAM_NAME == __FILE__
       lifecycle = EvalOpsReviewFeedbackSweep.guardrail_lifecycle_json(backlog, issue_results: issue_results)
       File.write(options.fetch(:guardrail_lifecycle_json_output), "#{JSON.pretty_generate(lifecycle)}\n")
     end
+    lifecycle ||= EvalOpsReviewFeedbackSweep.guardrail_lifecycle_json(backlog, issue_results: issue_results)
+  end
+
+  if options[:weekly_report_issue_repo] && !options.fetch(:dry_run)
+    report_body = EvalOpsReviewFeedbackSweep.weekly_guardrail_report_markdown(backlog || EvalOpsReviewFeedbackSweep.guardrail_backlog_json(ledger), lifecycle: lifecycle)
+    EvalOpsReviewFeedbackSweep.upsert_issue(
+      repo: options.fetch(:weekly_report_issue_repo),
+      title: options.fetch(:weekly_report_issue_title),
+      body: report_body
+    )
   end
 
   if items.any? && options[:issue_repo] && !options.fetch(:dry_run)

@@ -374,6 +374,80 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     JSON.parse(JSON.pretty_generate(lifecycle))
   end
 
+  def test_weekly_guardrail_report_markdown_summarizes_candidates_and_prevented_classes
+    backlog = {
+      "schema_version" => "evalops.review_feedback_guardrail_backlog.v1",
+      "owner" => "evalops",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "source_finding_count" => 3,
+      "class_count" => 2,
+      "classes" => [
+        {
+          "key" => "generated-contract-drift",
+          "title" => "Generated contract drift",
+          "score" => 140,
+          "finding_count" => 2,
+          "repos" => ["evalops/platform", "evalops/proto"],
+          "repo_fingerprints" => {
+            "evalops/platform" => ["a" * 64],
+            "evalops/proto" => ["b" * 64]
+          },
+          "recommended_guardrail" => "Add generated-output drift checks."
+        },
+        {
+          "key" => "parser-cli-contract",
+          "title" => "Parser and CLI contract drift",
+          "score" => 80,
+          "finding_count" => 1,
+          "repos" => ["evalops/deploy"],
+          "repo_fingerprints" => {
+            "evalops/deploy" => ["c" * 64]
+          },
+          "recommended_guardrail" => "Add parser-backed tests."
+        }
+      ]
+    }
+    lifecycle = {
+      "issues" => [
+        {
+          "class_key" => "parser-cli-contract",
+          "issue_url" => "https://github.com/evalops/.github/issues/50",
+          "action" => "already_closed"
+        }
+      ]
+    }
+
+    report = EvalOpsReviewFeedbackSweep.weekly_guardrail_report_markdown(
+      backlog,
+      lifecycle: lifecycle,
+      generated_at: Time.utc(2026, 5, 10, 6, 15, 0)
+    )
+
+    assert_includes report, "# Weekly review feedback guardrail report"
+    assert_includes report, "<!-- evalops-review-feedback-weekly-report -->"
+    assert_includes report, "| 1 | `generated-contract-drift` Generated contract drift | 140 | 2 | evalops/platform, evalops/proto |"
+    assert_includes report, "| evalops/platform | 1 |"
+    assert_includes report, "`parser-cli-contract` https://github.com/evalops/.github/issues/50"
+    assert_includes report, "`generated-contract-drift`: Add generated-output drift checks."
+  end
+
+  def test_weekly_guardrail_report_markdown_handles_empty_backlog
+    backlog = {
+      "schema_version" => "evalops.review_feedback_guardrail_backlog.v1",
+      "owner" => "evalops",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "source_finding_count" => 0,
+      "class_count" => 0,
+      "classes" => []
+    }
+
+    report = EvalOpsReviewFeedbackSweep.weekly_guardrail_report_markdown(backlog)
+
+    assert_includes report, "No guardrail candidates found in this window."
+  end
+
   def test_issue_number_from_url_extracts_github_issue_number
     assert_equal 49, EvalOpsReviewFeedbackSweep.issue_number_from_url("https://github.com/evalops/.github/issues/49")
     assert_nil EvalOpsReviewFeedbackSweep.issue_number_from_url("https://github.com/evalops/.github/pull/49")
