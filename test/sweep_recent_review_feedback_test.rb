@@ -156,6 +156,8 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_equal "evalops/platform", first.fetch("sample_findings").first.fetch("repo")
     assert_equal 2, first.fetch("finding_fingerprints").length
     assert_match(/\A[0-9a-f]{64}\z/, first.fetch("finding_fingerprints").first)
+    assert_equal 1, first.fetch("repo_fingerprints").fetch("evalops/platform").length
+    assert_equal "evalops/proto", first.fetch("repo_sample_findings").fetch("evalops/proto").first.fetch("repo")
 
     markdown = EvalOpsReviewFeedbackSweep.guardrail_backlog_markdown(backlog)
     assert_includes markdown, "# Review feedback guardrail backlog"
@@ -283,6 +285,60 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_match(/- `[0-9a-f]{64}`/, body)
     assert_includes body, "The guardrail fails for at least one representative feedback shape listed above."
     assert_includes body, "The issue is closed only after the guardrail has merged"
+  end
+
+  def test_repo_guardrail_issue_title_and_body_route_feedback_to_source_repo
+    finding = {
+      "repo" => "evalops/platform",
+      "pr_number" => 1676,
+      "feedback_url" => "https://github.com/evalops/platform/pull/1676#discussion_r1",
+      "path" => "internal/agentruntime/agentruntime/postgres_store.go",
+      "line" => 295,
+      "severity" => "p1",
+      "body_first_line" => "Roll back tx before loading idempotent receipt"
+    }
+    fingerprint = EvalOpsReviewFeedbackSweep.guardrail_finding_fingerprint(finding)
+    backlog = {
+      "schema_version" => "evalops.review_feedback_guardrail_backlog.v1",
+      "owner" => "evalops",
+      "generated_at" => "2026-05-10T05:40:00Z",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "class_count" => 1
+    }
+    entry = {
+      "key" => "runtime-smoke-coverage",
+      "title" => "Runtime smoke coverage gap",
+      "score" => 100,
+      "finding_count" => 2,
+      "repos" => ["evalops/platform"],
+      "recommended_guardrail" => "Add a smoke or preflight fixture that proves the runtime-visible behavior.",
+      "repo_fingerprints" => {
+        "evalops/platform" => [fingerprint]
+      },
+      "repo_sample_findings" => {
+        "evalops/platform" => [finding]
+      },
+      "sample_findings" => [finding]
+    }
+
+    assert_equal(
+      "[codex] Guardrail candidate: Runtime smoke coverage gap (runtime-smoke-coverage)",
+      EvalOpsReviewFeedbackSweep.repo_guardrail_issue_title(entry)
+    )
+
+    body = EvalOpsReviewFeedbackSweep.repo_guardrail_issue_body(
+      backlog,
+      entry,
+      repo: "evalops/platform",
+      org_issue_url: "https://github.com/evalops/.github/issues/49"
+    )
+    assert_includes body, "<!-- evalops-review-feedback-repo-guardrail-issue:runtime-smoke-coverage -->"
+    assert_includes body, "- Repo: `evalops/platform`"
+    assert_includes body, "- Org tracker: https://github.com/evalops/.github/issues/49"
+    assert_includes body, "Representative feedback in this repo"
+    assert_includes body, "Roll back tx before loading idempotent receipt"
+    assert_includes body, "- `#{fingerprint}`"
   end
 
   def test_guardrail_lifecycle_json_records_issue_actions
@@ -445,6 +501,170 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_equal "reopened", result.fetch("action")
     assert_equal ["issue", "reopen", "50"], calls[1].first(3)
     assert_equal ["issue", "edit", "50"], calls[2].first(3)
+  end
+
+  def test_upsert_repo_guardrail_issue_keeps_closed_issue_closed_when_fingerprints_match
+    finding = {
+      "repo" => "evalops/deploy",
+      "pr_number" => 2390,
+      "feedback_url" => "https://github.com/evalops/deploy/pull/2390#issuecomment-1",
+      "path" => nil,
+      "line" => nil,
+      "severity" => "high",
+      "body_first_line" => "Parse real CLI flags instead of substring matching"
+    }
+    fingerprint = EvalOpsReviewFeedbackSweep.guardrail_finding_fingerprint(finding)
+    backlog = {
+      "generated_at" => "2026-05-10T05:40:00Z",
+      "merged_since" => "2026-05-09T05:40:00Z",
+      "min_severity" => "high"
+    }
+    entry = {
+      "key" => "parser-cli-contract",
+      "title" => "Parser and CLI contract drift",
+      "score" => 80,
+      "finding_count" => 1,
+      "repos" => ["evalops/deploy"],
+      "recommended_guardrail" => "Add parser-backed tests.",
+      "repo_fingerprints" => {
+        "evalops/deploy" => [fingerprint]
+      },
+      "repo_sample_findings" => {
+        "evalops/deploy" => [finding]
+      },
+      "sample_findings" => [finding]
+    }
+    issue = {
+      "number" => 2400,
+      "title" => "[codex] Guardrail candidate: Parser and CLI contract drift (parser-cli-contract)",
+      "state" => "CLOSED",
+      "url" => "https://github.com/evalops/deploy/issues/2400",
+      "body" => "- `#{fingerprint}`"
+    }
+    handler = lambda do |args, _input|
+      if args[0, 2] == ["issue", "list"]
+        assert_equal "evalops/deploy", args[args.index("--repo") + 1]
+        [JSON.generate([issue]), "", success_status]
+      else
+        flunk("unexpected gh call: #{args.inspect}")
+      end
+    end
+
+    result = nil
+    calls = with_stubbed_gh(handler) do
+      result = EvalOpsReviewFeedbackSweep.upsert_repo_guardrail_issue(
+        repo: "evalops/deploy",
+        backlog: backlog,
+        entry: entry,
+        org_issue_url: "https://github.com/evalops/.github/issues/50"
+      )
+    end
+
+    assert_equal "repo", result.fetch("scope")
+    assert_equal "evalops/deploy", result.fetch("repo")
+    assert_equal "already_closed", result.fetch("action")
+    assert_equal 1, calls.length
+  end
+
+  def test_upsert_repo_guardrail_issues_creates_one_issue_per_source_repo
+    platform_finding = {
+      "repo" => "evalops/platform",
+      "pr_number" => 1545,
+      "feedback_url" => "https://github.com/evalops/platform/pull/1545#discussion_r1",
+      "path" => "proto/codex/v1/codex.proto",
+      "line" => 42,
+      "severity" => "p1",
+      "body_first_line" => "generated TypeScript SDK is stale"
+    }
+    proto_finding = {
+      "repo" => "evalops/proto",
+      "pr_number" => 88,
+      "feedback_url" => "https://github.com/evalops/proto/pull/88#discussion_r2",
+      "path" => "gen/go/meter/v1/event.pb.go",
+      "line" => 7,
+      "severity" => "high",
+      "body_first_line" => "generated Go output was not committed"
+    }
+    backlog = {
+      "generated_at" => "2026-05-10T05:40:00Z",
+      "merged_since" => "2026-04-10",
+      "min_severity" => "high",
+      "classes" => [
+        {
+          "key" => "generated-contract-drift",
+          "title" => "Generated contract drift",
+          "score" => 140,
+          "finding_count" => 2,
+          "repos" => ["evalops/platform", "evalops/proto"],
+          "recommended_guardrail" => "Add generated-output drift checks.",
+          "repo_sample_findings" => {
+            "evalops/platform" => [platform_finding],
+            "evalops/proto" => [proto_finding]
+          },
+          "sample_findings" => [platform_finding, proto_finding]
+        }
+      ]
+    }
+    created_urls = {
+      "evalops/platform" => "https://github.com/evalops/platform/issues/1",
+      "evalops/proto" => "https://github.com/evalops/proto/issues/2"
+    }
+    handler = lambda do |args, input|
+      if args[0, 2] == ["issue", "list"]
+        [JSON.generate([]), "", success_status]
+      elsif args[0, 2] == ["issue", "create"]
+        repo = args[args.index("--repo") + 1]
+        assert_includes input, "https://github.com/evalops/.github/issues/77"
+        [created_urls.fetch(repo), "", success_status]
+      else
+        flunk("unexpected gh call: #{args.inspect}")
+      end
+    end
+
+    results = nil
+    with_stubbed_gh(handler) do
+      results = EvalOpsReviewFeedbackSweep.upsert_repo_guardrail_issues(
+        backlog: backlog,
+        org_issue_results: [
+          {
+            "class_key" => "generated-contract-drift",
+            "issue_url" => "https://github.com/evalops/.github/issues/77"
+          }
+        ]
+      )
+    end
+
+    assert_equal ["evalops/platform", "evalops/proto"], results.map { |result| result.fetch("repo") }
+    assert_equal ["created", "created"], results.map { |result| result.fetch("action") }
+  end
+
+  def test_upsert_repo_guardrail_issues_skips_classes_already_closed_at_org_level
+    backlog = {
+      "classes" => [
+        {
+          "key" => "parser-cli-contract",
+          "title" => "Parser and CLI contract drift",
+          "repos" => ["evalops/deploy"],
+          "sample_findings" => []
+        }
+      ]
+    }
+
+    results = nil
+    with_stubbed_gh(lambda { |args, _input| flunk("unexpected gh call: #{args.inspect}") }) do
+      results = EvalOpsReviewFeedbackSweep.upsert_repo_guardrail_issues(
+        backlog: backlog,
+        org_issue_results: [
+          {
+            "class_key" => "parser-cli-contract",
+            "issue_url" => "https://github.com/evalops/.github/issues/50",
+            "action" => "already_closed"
+          }
+        ]
+      )
+    end
+
+    assert_equal [], results
   end
 
   def test_close_stale_guardrail_class_issues_closes_only_missing_classes

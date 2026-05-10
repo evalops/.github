@@ -48,6 +48,7 @@ jobs:
             --guardrail-backlog-output review-feedback-guardrail-backlog.md \
             --guardrail-backlog-json-output review-feedback-guardrail-backlog.json \
             --guardrail-issue-repo evalops/.github \
+            --guardrail-repo-issues \
             --guardrail-lifecycle-json-output review-feedback-guardrail-lifecycle.json \
             > review-feedback-sentinel.md
           status=$?
