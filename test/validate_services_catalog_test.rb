@@ -60,6 +60,16 @@ class ValidateServicesCatalogTest < Minitest::Test
     assert_match(/identity: proto_consumer must be true or false when present/, stderr)
   end
 
+  def test_proto_consumers_must_depend_on_proto
+    catalog = minimal_catalog
+    catalog["services"]["identity"]["depends_on"] = []
+
+    stdout, stderr, status = run_validator(catalog)
+
+    refute status.success?, stdout
+    assert_match(/identity: proto_consumer services must include proto in depends_on/, stderr)
+  end
+
   private
 
   def run_validator(catalog)

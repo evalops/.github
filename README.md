@@ -45,6 +45,8 @@ lanes to downstream repositories:
 - `codex-pr-review.yml` reviews PR diffs and posts focused findings.
 - `codex-structured-pr-review.yml` reviews PR diffs with a JSON schema and
   posts actionable findings as inline review comments.
+- `review-thread-guard.yml` fails PRs that still have unresolved, non-outdated
+  high-priority review threads.
 - `codex-ci-triage.yml` triages a specific failed Actions run.
 - `codex-post-merge-verify.yml` checks default-branch health after merges.
 - `codex-label-churn-audit.yml` audits PR label mutation loops.
@@ -88,6 +90,33 @@ jobs:
 For production repos, pin the reusable workflow to a reviewed commit SHA and
 pass the same SHA as `helper_ref`. That keeps the workflow and helper scripts on
 one immutable revision.
+
+### Review Thread Guard
+
+Use `.github/workflow-templates/review-thread-guard.yml` on repos where review
+threads should be merge blockers:
+
+```yaml
+name: Review thread guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  unresolved-review-threads:
+    uses: evalops/.github/.github/workflows/review-thread-guard.yml@main
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+```
+
+The guard blocks unresolved, non-outdated review threads at `high` severity or
+above by default. Use `workflow_dispatch` with `min_severity=p1` for repos that
+only want release-blocking findings to fail.
 
 ### Codex Rails Check
 
