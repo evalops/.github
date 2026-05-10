@@ -103,23 +103,41 @@ module EvalOpsReviewThreadGuard
     ) + top_level_feedback(payload, min_severity: min_severity)
   end
 
-  def merge_review_thread_nodes(payload, nodes)
+  def merge_pull_request_connections(payload, comments: nil, reviews: nil, review_threads: nil)
     merged = payload.is_a?(Hash) ? payload : {}
     merged["data"] = {} unless merged["data"].is_a?(Hash)
     merged["data"]["repository"] = {} unless merged["data"]["repository"].is_a?(Hash)
     merged["data"]["repository"]["pullRequest"] = {} unless merged["data"]["repository"]["pullRequest"].is_a?(Hash)
     pull_request = merged["data"]["repository"]["pullRequest"]
-    pull_request["reviewThreads"] = {} unless pull_request["reviewThreads"].is_a?(Hash)
-    pull_request["reviewThreads"]["nodes"] = nodes
+    if comments
+      pull_request["comments"] = {} unless pull_request["comments"].is_a?(Hash)
+      pull_request["comments"]["nodes"] = comments
+    end
+    if reviews
+      pull_request["reviews"] = {} unless pull_request["reviews"].is_a?(Hash)
+      pull_request["reviews"]["nodes"] = reviews
+    end
+    if review_threads
+      pull_request["reviewThreads"] = {} unless pull_request["reviewThreads"].is_a?(Hash)
+      pull_request["reviewThreads"]["nodes"] = review_threads
+    end
     merged
+  end
+
+  def merge_review_thread_nodes(payload, nodes)
+    merge_pull_request_connections(payload, review_threads: nodes)
   end
 
   def graphql_query
     <<~GRAPHQL
-      query($owner:String!,$repo:String!,$number:Int!,$after:String) {
+      query($owner:String!,$repo:String!,$number:Int!) {
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$number) {
             comments(first:100) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
               nodes {
                 author {
                   login
@@ -129,6 +147,10 @@ module EvalOpsReviewThreadGuard
               }
             }
             reviews(first:100) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
               nodes {
                 author {
                   login
@@ -138,6 +160,85 @@ module EvalOpsReviewThreadGuard
                 url
               }
             }
+            reviewThreads(first:100) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                id
+                isResolved
+                isOutdated
+                path
+                line
+                comments(first:20) {
+                  nodes {
+                    body
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    GRAPHQL
+  end
+
+  def comments_page_query
+    <<~GRAPHQL
+      query($owner:String!,$repo:String!,$number:Int!,$after:String) {
+        repository(owner:$owner, name:$repo) {
+          pullRequest(number:$number) {
+            comments(first:100, after:$after) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                author {
+                  login
+                }
+                body
+                url
+              }
+            }
+          }
+        }
+      }
+    GRAPHQL
+  end
+
+  def reviews_page_query
+    <<~GRAPHQL
+      query($owner:String!,$repo:String!,$number:Int!,$after:String) {
+        repository(owner:$owner, name:$repo) {
+          pullRequest(number:$number) {
+            reviews(first:100, after:$after) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                author {
+                  login
+                }
+                body
+                state
+                url
+              }
+            }
+          }
+        }
+      }
+    GRAPHQL
+  end
+
+  def review_threads_page_query
+    <<~GRAPHQL
+      query($owner:String!,$repo:String!,$number:Int!,$after:String) {
+        repository(owner:$owner, name:$repo) {
+          pullRequest(number:$number) {
             reviewThreads(first:100, after:$after) {
               pageInfo {
                 hasNextPage
@@ -163,42 +264,82 @@ module EvalOpsReviewThreadGuard
     GRAPHQL
   end
 
-  def fetch_payload(repo:, pr:)
-    owner, name = repo.split("/", 2)
+  def fetch_graphql(owner:, name:, pr:, query:, cursor: nil)
+    args = [
+      "gh",
+      "api",
+      "graphql",
+      "-f",
+      "owner=#{owner}",
+      "-f",
+      "repo=#{name}",
+      "-F",
+      "number=#{pr}",
+      "-f",
+      "query=#{query}"
+    ]
+    args += ["-f", "after=#{cursor}"] if cursor
+    stdout, stderr, status = Open3.capture3(*args)
+    raise "gh api graphql failed: #{stderr.strip}" unless status.success?
+
+    JSON.parse(stdout)
+  end
+
+  def fetch_connection_tail(owner:, name:, pr:, query:, connection_name:, first_connection:)
     nodes = []
-    cursor = nil
-    first_payload = nil
+    connection = first_connection || {}
+    page_info = connection["pageInfo"] || {}
+    while page_info["hasNextPage"]
+      cursor = page_info["endCursor"]
+      raise "gh api graphql failed: missing #{connection_name} endCursor" if cursor.to_s.empty?
 
-    loop do
-      args = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        "owner=#{owner}",
-        "-f",
-        "repo=#{name}",
-        "-F",
-        "number=#{pr}",
-        "-f",
-        "query=#{graphql_query}"
-      ]
-      args += ["-f", "after=#{cursor}"] if cursor
-      stdout, stderr, status = Open3.capture3(*args)
-      raise "gh api graphql failed: #{stderr.strip}" unless status.success?
-
-      payload = JSON.parse(stdout)
-      first_payload ||= payload
-      connection = payload.dig("data", "repository", "pullRequest", "reviewThreads") || {}
+      payload = fetch_graphql(owner: owner, name: name, pr: pr, query: query, cursor: cursor)
+      connection = payload.dig("data", "repository", "pullRequest", connection_name) || {}
       nodes.concat(Array(connection["nodes"]))
       page_info = connection["pageInfo"] || {}
-      break unless page_info["hasNextPage"]
-
-      cursor = page_info["endCursor"]
-      raise "gh api graphql failed: missing reviewThreads endCursor" if cursor.to_s.empty?
     end
+    nodes
+  end
 
-    merge_review_thread_nodes(first_payload || {}, nodes)
+  def fetch_payload(repo:, pr:)
+    owner, name = repo.split("/", 2)
+    payload = fetch_graphql(owner: owner, name: name, pr: pr, query: graphql_query)
+    pull_request = payload.dig("data", "repository", "pullRequest") || {}
+    comments_connection = pull_request["comments"] || {}
+    reviews_connection = pull_request["reviews"] || {}
+    threads_connection = pull_request["reviewThreads"] || {}
+
+    comments = Array(comments_connection["nodes"]) + fetch_connection_tail(
+      owner: owner,
+      name: name,
+      pr: pr,
+      query: comments_page_query,
+      connection_name: "comments",
+      first_connection: comments_connection
+    )
+    reviews = Array(reviews_connection["nodes"]) + fetch_connection_tail(
+      owner: owner,
+      name: name,
+      pr: pr,
+      query: reviews_page_query,
+      connection_name: "reviews",
+      first_connection: reviews_connection
+    )
+    review_threads = Array(threads_connection["nodes"]) + fetch_connection_tail(
+      owner: owner,
+      name: name,
+      pr: pr,
+      query: review_threads_page_query,
+      connection_name: "reviewThreads",
+      first_connection: threads_connection
+    )
+
+    merge_pull_request_connections(
+      payload,
+      comments: comments,
+      reviews: reviews,
+      review_threads: review_threads
+    )
   end
 
   def annotation(thread)
