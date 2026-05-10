@@ -16,7 +16,7 @@ on:
       pr_limit:
         description: "Maximum merged PRs to inspect"
         required: false
-        default: "1000"
+        default: "250"
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
       GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN || secrets.EVALOPS_ORG_READ_TOKEN }}
       SINCE_HOURS: ${{ inputs.since_hours || '720' }}
       MIN_SEVERITY: ${{ inputs.min_severity || 'high' }}
-      PR_LIMIT: ${{ inputs.pr_limit || '1000' }}
+      PR_LIMIT: ${{ inputs.pr_limit || '250' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -51,6 +51,7 @@ jobs:
             --since-hours "${SINCE_HOURS}" \
             --pr-limit "${PR_LIMIT}" \
             --min-severity "${MIN_SEVERITY}" \
+            --progress \
             --json-output review-feedback-30d-ledger.json \
             --guardrail-backlog-output review-feedback-30d-guardrail-backlog.md \
             --guardrail-backlog-json-output review-feedback-30d-guardrail-backlog.json \

@@ -126,9 +126,12 @@ module EvalOpsReviewFeedbackSweep
     JSON.parse(stdout)
   end
 
-  def feedback_items(owner:, since:, min_severity:, pr_limit: 100)
-    search_recent_prs(owner: owner, since: since, limit: pr_limit).flat_map do |pr|
+  def feedback_items(owner:, since:, min_severity:, pr_limit: 100, progress: false)
+    prs = search_recent_prs(owner: owner, since: since, limit: pr_limit)
+    warn "review feedback sweep: inspecting #{prs.length} merged PRs since #{since}" if progress
+    prs.each_with_index.flat_map do |pr, index|
       repo = pr.fetch("repository").fetch("nameWithOwner")
+      warn "review feedback sweep: #{index + 1}/#{prs.length} #{repo}##{pr.fetch("number")}" if progress
       payload = EvalOpsReviewThreadGuard.fetch_payload(repo: repo, pr: pr.fetch("number"))
       EvalOpsReviewThreadGuard.blocking_feedback(payload, min_severity: min_severity).map do |item|
         item.merge(
@@ -925,6 +928,7 @@ if $PROGRAM_NAME == __FILE__
     guardrail_repo_issues: false,
     weekly_report_issue_repo: nil,
     weekly_report_issue_title: EvalOpsReviewFeedbackSweep::DEFAULT_WEEKLY_REPORT_TITLE,
+    progress: false,
     pr_limit: 100,
     dry_run: false
   }
@@ -944,6 +948,7 @@ if $PROGRAM_NAME == __FILE__
     parser.on("--guardrail-lifecycle-json-output PATH", "Write guardrail issue lifecycle JSON to this path") { |value| options[:guardrail_lifecycle_json_output] = value }
     parser.on("--weekly-report-issue-repo OWNER/REPO", "Create or comment on this issue repo with the guardrail report") { |value| options[:weekly_report_issue_repo] = value }
     parser.on("--weekly-report-issue-title TITLE", "Issue title for the guardrail report") { |value| options[:weekly_report_issue_title] = value }
+    parser.on("--progress", "Print PR inspection progress to stderr") { options[:progress] = true }
     parser.on("--dry-run", "Print report and skip issue writes") { options[:dry_run] = true }
   end.parse!
 
@@ -957,7 +962,8 @@ if $PROGRAM_NAME == __FILE__
     owner: options.fetch(:owner),
     since: since,
     min_severity: options.fetch(:min_severity),
-    pr_limit: options.fetch(:pr_limit)
+    pr_limit: options.fetch(:pr_limit),
+    progress: options.fetch(:progress)
   )
   ledger = EvalOpsReviewFeedbackSweep.ledger_json(
     items,

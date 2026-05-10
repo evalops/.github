@@ -86,6 +86,62 @@ class SweepRecentReviewFeedbackTest < Minitest::Test
     assert_equal [], ledger.fetch("findings")
   end
 
+  def test_feedback_items_progress_reports_search_and_pr_numbers
+    prs = [
+      {
+        "repository" => {
+          "nameWithOwner" => "evalops/deploy"
+        },
+        "number" => 2390,
+        "title" => "fix parser",
+        "url" => "https://github.com/evalops/deploy/pull/2390",
+        "closedAt" => "2026-05-10T05:00:00Z"
+      }
+    ]
+    payload = {
+      "repository" => {
+        "pullRequest" => {
+          "reviewThreads" => {
+            "nodes" => []
+          },
+          "comments" => {
+            "nodes" => []
+          },
+          "reviews" => {
+            "nodes" => []
+          }
+        }
+      }
+    }
+    original_search = EvalOpsReviewFeedbackSweep.method(:search_recent_prs)
+    original_fetch = EvalOpsReviewThreadGuard.method(:fetch_payload)
+    EvalOpsReviewFeedbackSweep.define_singleton_method(:search_recent_prs) { |owner:, since:, limit:| prs }
+    EvalOpsReviewThreadGuard.define_singleton_method(:fetch_payload) { |repo:, pr:| payload }
+
+    _stdout, stderr = capture_io do
+      assert_equal(
+        [],
+        EvalOpsReviewFeedbackSweep.feedback_items(
+          owner: "evalops",
+          since: "2026-04-10",
+          min_severity: "high",
+          pr_limit: 10,
+          progress: true
+        )
+      )
+    end
+
+    assert_includes stderr, "review feedback sweep: inspecting 1 merged PRs since 2026-04-10"
+    assert_includes stderr, "review feedback sweep: 1/1 evalops/deploy#2390"
+  ensure
+    EvalOpsReviewFeedbackSweep.define_singleton_method(:search_recent_prs) do |owner:, since:, limit: 100|
+      original_search.call(owner: owner, since: since, limit: limit)
+    end
+    EvalOpsReviewThreadGuard.define_singleton_method(:fetch_payload) do |repo:, pr:|
+      original_fetch.call(repo: repo, pr: pr)
+    end
+  end
+
   def test_guardrail_backlog_ranks_recurring_feedback_classes
     ledger = {
       "schema_version" => "evalops.review_feedback_ledger.v1",
