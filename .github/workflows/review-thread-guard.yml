@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: ubuntu-latest
+      guard_ref:
+        description: "evalops/.github ref to checkout for guard scripts"
+        required: false
+        type: string
+        default: 1a8d8e42854b0d13818d7c46fc689613aa5bb271
   workflow_dispatch:
     inputs:
       repo:
@@ -36,6 +41,11 @@ on:
           - high
           - p1
           - p0
+      guard_ref:
+        description: "evalops/.github ref to checkout for guard scripts"
+        required: false
+        type: string
+        default: 1a8d8e42854b0d13818d7c46fc689613aa5bb271
 
 permissions:
   contents: read
@@ -49,7 +59,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: evalops/.github
-          ref: main
+          ref: ${{ inputs.guard_ref || '1a8d8e42854b0d13818d7c46fc689613aa5bb271' }}
           path: evalops-github
 
       - name: Fail on unresolved high-priority review threads
