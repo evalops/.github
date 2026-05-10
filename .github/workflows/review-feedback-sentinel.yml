@@ -38,6 +38,7 @@ jobs:
             --since-hours "${SINCE_HOURS}" \
             --min-severity "${MIN_SEVERITY}" \
             --issue-repo evalops/.github \
+            --json-output review-feedback-ledger.json \
             > review-feedback-sentinel.md
           status=$?
           cat review-feedback-sentinel.md >> "${GITHUB_STEP_SUMMARY}"
@@ -49,3 +50,12 @@ jobs:
             exit 0
           fi
           exit "${status}"
+
+      - name: Upload review feedback ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-feedback-ledger
+          path: review-feedback-ledger.json
+          if-no-files-found: error
+          retention-days: 30

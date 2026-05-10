@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "open3"
 require "optparse"
 require "tempfile"
@@ -12,6 +13,7 @@ module EvalOpsReviewFeedbackSweep
   module_function
 
   DEFAULT_TITLE = "[codex] Recent unresolved review feedback"
+  LEDGER_SCHEMA_VERSION = "evalops.review_feedback_ledger.v1"
 
   def gh(*args, input: nil)
     command = ["gh", *args]
@@ -91,6 +93,53 @@ module EvalOpsReviewFeedbackSweep
     lines.join("\n")
   end
 
+  def feedback_class(item)
+    case item.fetch(:kind)
+    when "review_thread"
+      "review_thread"
+    when "pr_comment"
+      "top_level_pr_comment"
+    when "pr_review"
+      "top_level_pr_review"
+    else
+      "unknown"
+    end
+  end
+
+  def ledger_entry(item)
+    body = item.fetch(:body).to_s
+    {
+      "repo" => item.fetch(:repo),
+      "pr_number" => item.fetch(:pr_number),
+      "pr_title" => item.fetch(:pr_title),
+      "pr_url" => item.fetch(:pr_url),
+      "merged_at" => item["merged_at"] || item[:merged_at],
+      "kind" => item.fetch(:kind),
+      "feedback_class" => feedback_class(item),
+      "severity" => item.fetch(:severity),
+      "feedback_url" => item[:url],
+      "path" => item[:path],
+      "line" => item[:line],
+      "author" => item[:author],
+      "state" => item[:state],
+      "is_outdated" => item[:is_outdated],
+      "body_first_line" => body.lines.first.to_s.strip,
+      "body_sha256" => Digest::SHA256.hexdigest(body)
+    }.compact
+  end
+
+  def ledger_json(items, owner:, since:, min_severity:, generated_at: Time.now.utc)
+    {
+      "schema_version" => LEDGER_SCHEMA_VERSION,
+      "generated_at" => generated_at.utc.iso8601,
+      "owner" => owner,
+      "merged_since" => since,
+      "min_severity" => min_severity,
+      "finding_count" => items.length,
+      "findings" => items.map { |item| ledger_entry(item) }
+    }
+  end
+
   def upsert_issue(repo:, title:, body:)
     stdout, stderr, status = gh(
       "issue",
@@ -131,6 +180,7 @@ if $PROGRAM_NAME == __FILE__
     min_severity: "high",
     issue_repo: nil,
     issue_title: EvalOpsReviewFeedbackSweep::DEFAULT_TITLE,
+    json_output: nil,
     dry_run: false
   }
 
@@ -140,6 +190,7 @@ if $PROGRAM_NAME == __FILE__
     parser.on("--min-severity LEVEL", "Minimum severity to report") { |value| options[:min_severity] = value.downcase }
     parser.on("--issue-repo OWNER/REPO", "Create or comment on this issue repo when findings exist") { |value| options[:issue_repo] = value }
     parser.on("--issue-title TITLE", "Issue title for sweep findings") { |value| options[:issue_title] = value }
+    parser.on("--json-output PATH", "Write machine-readable feedback ledger JSON to this path") { |value| options[:json_output] = value }
     parser.on("--dry-run", "Print report and skip issue writes") { options[:dry_run] = true }
   end.parse!
 
@@ -161,6 +212,16 @@ if $PROGRAM_NAME == __FILE__
     min_severity: options.fetch(:min_severity)
   )
   puts body
+
+  if options[:json_output]
+    ledger = EvalOpsReviewFeedbackSweep.ledger_json(
+      items,
+      owner: options.fetch(:owner),
+      since: since,
+      min_severity: options.fetch(:min_severity)
+    )
+    File.write(options.fetch(:json_output), "#{JSON.pretty_generate(ledger)}\n")
+  end
 
   if items.any? && options[:issue_repo] && !options.fetch(:dry_run)
     EvalOpsReviewFeedbackSweep.upsert_issue(
