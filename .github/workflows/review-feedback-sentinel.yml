@@ -43,6 +43,7 @@ jobs:
           fi
 
       - name: Sweep recent merged PR feedback
+        id: sweep
         run: |
           set +e
           ruby .github/scripts/sweep-recent-review-feedback.rb \
@@ -74,7 +75,7 @@ jobs:
           exit "${status}"
 
       - name: Upload review feedback ledger
-        if: always()
+        if: ${{ always() && steps.sweep.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: review-feedback-ledger
@@ -83,7 +84,7 @@ jobs:
           retention-days: 30
 
       - name: Upload review feedback guardrail backlog
-        if: always()
+        if: ${{ always() && steps.sweep.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: review-feedback-guardrail-backlog
