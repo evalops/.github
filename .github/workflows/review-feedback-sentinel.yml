@@ -28,12 +28,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
       SINCE_HOURS: ${{ inputs.since_hours || '72' }}
       MIN_SEVERITY: ${{ inputs.min_severity || 'high' }}
       PR_LIMIT: ${{ inputs.pr_limit || '100' }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Require org review guard token
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set secrets.EVALOPS_REVIEW_GUARD_TOKEN with org-wide PR read access before running the review feedback sentinel."
+            exit 2
+          fi
 
       - name: Sweep recent merged PR feedback
         run: |

@@ -28,12 +28,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
       SINCE_HOURS: ${{ inputs.since_hours || '720' }}
       MIN_SEVERITY: ${{ inputs.min_severity || 'high' }}
       PR_LIMIT: ${{ inputs.pr_limit || '1000' }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Require org review guard token
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set secrets.EVALOPS_REVIEW_GUARD_TOKEN with org-wide PR read access before running the 30-day feedback backfill."
+            exit 2
+          fi
 
       - name: Run review feedback backfill
         run: |
