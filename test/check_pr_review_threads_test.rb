@@ -159,6 +159,49 @@ class CheckPrReviewThreadsTest < Minitest::Test
     end
   end
 
+  def test_merge_pull_request_connections_sets_all_feedback_channels
+    merged = EvalOpsReviewThreadGuard.merge_pull_request_connections(
+      {},
+      comments: [{ "body" => "**High Severity** top-level" }],
+      reviews: [{ "body" => "**P1 Badge** review" }],
+      review_threads: [thread("T1", resolved: false, outdated: false, body: "**High Severity** thread")]
+    )
+
+    pull_request = merged.dig("data", "repository", "pullRequest")
+    assert_equal ["**High Severity** top-level"], pull_request.dig("comments", "nodes").map { |node| node.fetch("body") }
+    assert_equal ["**P1 Badge** review"], pull_request.dig("reviews", "nodes").map { |node| node.fetch("body") }
+    assert_equal ["T1"], pull_request.dig("reviewThreads", "nodes").map { |node| node.fetch("id") }
+  end
+
+  def test_fetch_connection_tail_uses_connection_specific_cursor
+    calls = []
+    original = EvalOpsReviewThreadGuard.method(:fetch_graphql)
+    tail_payload = connection_payload("comments", [{ "body" => "**High Severity** later page" }], has_next: false)
+    EvalOpsReviewThreadGuard.define_singleton_method(:fetch_graphql) do |**kwargs|
+      calls << kwargs
+      tail_payload
+    end
+
+    nodes = EvalOpsReviewThreadGuard.fetch_connection_tail(
+      owner: "evalops",
+      name: "example",
+      pr: 1,
+      query: "query",
+      connection_name: "comments",
+      first_connection: {
+        "nodes" => [{ "body" => "first page" }],
+        "pageInfo" => { "hasNextPage" => true, "endCursor" => "cursor-1" }
+      }
+    )
+
+    assert_equal [{ "body" => "**High Severity** later page" }], nodes
+    assert_equal ["cursor-1"], calls.map { |call| call.fetch(:cursor) }
+  ensure
+    EvalOpsReviewThreadGuard.define_singleton_method(:fetch_graphql) do |**kwargs|
+      original.call(**kwargs)
+    end
+  end
+
   private
 
   def payload_with(comments: [], reviews: [], threads: [])
@@ -192,6 +235,24 @@ class CheckPrReviewThreadsTest < Minitest::Test
     {
       "body" => body,
       "url" => url
+    }
+  end
+
+  def connection_payload(name, nodes, has_next:)
+    {
+      "data" => {
+        "repository" => {
+          "pullRequest" => {
+            name => {
+              "nodes" => nodes,
+              "pageInfo" => {
+                "hasNextPage" => has_next,
+                "endCursor" => has_next ? "next-cursor" : nil
+              }
+            }
+          }
+        }
+      }
     }
   end
 
