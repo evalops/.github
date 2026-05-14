@@ -19,10 +19,11 @@ module EvalOpsPrLensReview
     "migration-safety" => {
       name: "Migration safety",
       focus: [
-        "database migrations, schema ownership manifests, and generated migration embeds",
-        "backward/forward compatibility during rolling deploys and rollback",
-        "concurrent migration hazards, idempotency, and destructive DDL",
-        "missing migration tests, dry-runs, or release-order constraints"
+        "database migrations, schema ownership manifests, generated migration embeds, and stateful infrastructure migrations",
+        "Terraform, startup scripts, disk/cache migrations, and one-time data cleanup that must be safe on fresh and existing resources",
+        "backward/forward compatibility during rolling deploys, branch promotion, and rollback",
+        "concurrent migration hazards, idempotency, destructive DDL, and destructive filesystem or cloud-resource cleanup",
+        "missing migration tests, dry-runs, live plans, or release-order constraints"
       ]
     },
     "nats-contract-drift" => {

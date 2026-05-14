@@ -179,6 +179,38 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_includes prompt, "Existing bot or human review comments are evidence"
   end
 
+  def test_migration_safety_lens_covers_stateful_infra_rollouts
+    pr_json = {
+      "title" => "Buildfarm disk headroom",
+      "html_url" => "https://github.com/evalops/deploy/pull/2",
+      "draft" => false,
+      "base" => {
+        "ref" => "main",
+        "sha" => "base"
+      },
+      "head" => {
+        "ref" => "branch",
+        "sha" => "head"
+      }
+    }
+
+    prompt = EvalOpsPrLensReview.build_lens_prompt(
+      repo: "evalops/deploy",
+      pr: 2,
+      lens: "migration-safety",
+      pr_json: pr_json,
+      file_summary: "modified\tinfrastructure/gcp/stacks/60-bazel-remote-execution/main.tf\t+20\t-5",
+      review_context: "",
+      changed_files_text: "M\tinfrastructure/gcp/stacks/60-bazel-remote-execution/main.tf",
+      diff_text: "@@ terraform diff @@",
+      diff_truncated: false
+    )
+
+    assert_includes prompt, "stateful infrastructure migrations"
+    assert_includes prompt, "Terraform, startup scripts, disk/cache migrations"
+    assert_includes prompt, "destructive filesystem or cloud-resource cleanup"
+  end
+
   private
 
   def finding(title, confidence, priority, path, line)
