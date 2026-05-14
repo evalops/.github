@@ -121,6 +121,29 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_includes body, "`evalops-pr-lens/iam-blast-radius`"
   end
 
+  def test_call_anthropic_omits_deprecated_temperature_parameter
+    captured_body = nil
+    response = Net::HTTPOK.new("1.1", "200", "OK")
+    response.define_singleton_method(:body) do
+      JSON.generate("content" => [{ "text" => "{\"summary\":\"ok\",\"findings\":[]}" }])
+    end
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) do |request|
+      captured_body = JSON.parse(request.body)
+      response
+    end
+
+    Net::HTTP.stub(:start, ->(*_args, **_kwargs, &block) { block.call(fake_http) }) do
+      EvalOpsPrLensReview.call_anthropic(
+        prompt: "Review this PR",
+        model: "claude-opus-4-7",
+        api_key: "test-key"
+      )
+    end
+
+    refute_includes captured_body, "temperature"
+  end
+
   private
 
   def finding(title, confidence, priority, path, line)
