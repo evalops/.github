@@ -1,0 +1,275 @@
+name: EvalOps PR lens review
+
+on:
+  schedule:
+    - cron: "23 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      target_repos:
+        description: "Comma-separated repositories to sweep"
+        required: false
+        default: "evalops/platform,evalops/deploy,evalops/maestro-internal"
+      target_prs:
+        description: "Optional comma-separated repo#number filters, for example platform#2023,deploy#17"
+        required: false
+        default: ""
+      min_confidence:
+        description: "Minimum confidence for PR comment publication"
+        required: false
+        default: "0.82"
+      model:
+        description: "Model for lens reviewers"
+        required: false
+        default: "claude-opus-4-7"
+      provider:
+        description: "LLM provider for lens reviewers: anthropic or openai"
+        required: false
+        default: "anthropic"
+      max_diff_bytes:
+        description: "Maximum unified diff bytes sent to each lens reviewer"
+        required: false
+        default: "180000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evalops-pr-lens-review-${{ github.event_name == 'workflow_dispatch' && inputs.target_prs || 'all-open' }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      has_work: ${{ steps.discover.outputs.has_work }}
+      pr_count: ${{ steps.discover.outputs.pr_count }}
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN || secrets.EVALOPS_ORG_READ_TOKEN }}
+      TARGET_REPOS: ${{ inputs.target_repos || 'evalops/platform,evalops/deploy,evalops/maestro-internal' }}
+      TARGET_PRS: ${{ inputs.target_prs || '' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Require cross-repo GitHub token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set EVALOPS_ORG_READ_TOKEN or EVALOPS_PR_LENS_TOKEN with read access to platform, deploy, and maestro-internal."
+            exit 2
+          fi
+
+      - name: Discover open PRs
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby .github/scripts/evalops-pr-lens-review.rb discover \
+            --repos "${TARGET_REPOS}" \
+            --target-prs "${TARGET_PRS}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --matrix-output pr-lens-matrix.json \
+            --targets-output pr-lens-targets.json
+
+      - name: Upload discovery ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-lens-discovery
+          path: |
+            pr-lens-matrix.json
+            pr-lens-targets.json
+          if-no-files-found: error
+          retention-days: 30
+
+  lens-review:
+    needs: discover
+    if: ${{ needs.discover.outputs.has_work == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
+      REVIEW_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.EVALOPS_ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.EVALOPS_OPENAI_API_KEY }}
+      PR_LENS_PROVIDER: ${{ inputs.provider || 'anthropic' }}
+      PR_LENS_MODEL: ${{ inputs.model || 'claude-opus-4-7' }}
+      PR_LENS_MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes || '180000' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout org review helpers
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          path: org-defaults
+
+      - name: Require cross-repo write token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${REVIEW_TOKEN}" ]; then
+            echo "::error::Set EVALOPS_PR_LENS_TOKEN with read/write access to platform, deploy, and maestro-internal."
+            exit 2
+          fi
+
+      - name: Require model provider key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${PR_LENS_PROVIDER}" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::Set ANTHROPIC_API_KEY or EVALOPS_ANTHROPIC_API_KEY for Opus lens review."
+            exit 2
+          fi
+          if [ "${PR_LENS_PROVIDER}" = "openai" ] && [ -z "${OPENAI_API_KEY}" ]; then
+            echo "::error::Set OPENAI_API_KEY or EVALOPS_OPENAI_API_KEY for OpenAI lens review."
+            exit 2
+          fi
+
+      - name: Mark lens pending
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb post-status \
+            --repo "${{ matrix.repo }}" \
+            --sha "${{ matrix.head_sha }}" \
+            --context "${{ matrix.check_context }}" \
+            --state pending \
+            --description "Running ${{ matrix.lens }} lens review" \
+            --target-url "${RUN_URL}"
+
+      - name: Checkout target pull request
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ matrix.repo }}
+          ref: refs/pull/${{ matrix.pr }}/merge
+          token: ${{ env.REVIEW_TOKEN }}
+          fetch-depth: 0
+          path: target
+
+      - name: Fetch base and head refs
+        id: refs
+        shell: bash
+        env:
+          TARGET_REPO: ${{ matrix.repo }}
+          PR_NUMBER: ${{ matrix.pr }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}")"
+          base_ref="$(jq -r '.base.ref' <<<"${pr_json}")"
+          base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
+          head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
+          git -C target fetch --no-tags origin "${base_ref}" "+refs/pull/${PR_NUMBER}/head"
+          {
+            echo "base_ref=${base_ref}"
+            echo "base_sha=${base_sha}"
+            echo "head_sha=${head_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Run lens reviewer
+        shell: bash
+        env:
+          TARGET_REPO: ${{ matrix.repo }}
+          PR_NUMBER: ${{ matrix.pr }}
+          LENS: ${{ matrix.lens }}
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb run-lens \
+            --repo "${TARGET_REPO}" \
+            --pr "${PR_NUMBER}" \
+            --lens "${LENS}" \
+            --workspace target \
+            --base-sha "${BASE_SHA}" \
+            --head-sha "${HEAD_SHA}" \
+            --output lens-review.json \
+            --provider "${PR_LENS_PROVIDER}" \
+            --model "${PR_LENS_MODEL}" \
+            --max-diff-bytes "${PR_LENS_MAX_DIFF_BYTES}"
+
+      - name: Complete lens status
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          description="$(
+            ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb \
+              lens-status-description --review-json lens-review.json
+          )"
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb post-status \
+            --repo "${{ matrix.repo }}" \
+            --sha "${{ steps.refs.outputs.head_sha }}" \
+            --context "${{ matrix.check_context }}" \
+            --state success \
+            --description "${description}" \
+            --target-url "${RUN_URL}"
+
+      - name: Mark lens errored
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb post-status \
+            --repo "${{ matrix.repo }}" \
+            --sha "${{ matrix.head_sha }}" \
+            --context "${{ matrix.check_context }}" \
+            --state error \
+            --description "${{ matrix.lens }} lens review failed" \
+            --target-url "${RUN_URL}"
+
+      - name: Upload lens review
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-lens-${{ matrix.repo_slug }}-${{ matrix.pr }}-${{ matrix.lens }}
+          path: lens-review.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  meta-review:
+    needs:
+      - discover
+      - lens-review
+    if: ${{ always() && needs.discover.outputs.has_work == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
+      PR_LENS_MIN_CONFIDENCE: ${{ inputs.min_confidence || '0.82' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout org review helpers
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Download lens artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Require cross-repo write token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set EVALOPS_PR_LENS_TOKEN with read/write access to platform, deploy, and maestro-internal."
+            exit 2
+          fi
+
+      - name: Publish high-confidence findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby .github/scripts/evalops-pr-lens-review.rb meta-review \
+            --artifact-root artifacts \
+            --min-confidence "${PR_LENS_MIN_CONFIDENCE}" \
+            --output meta-review.json
+
+      - name: Upload meta review ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-lens-meta-review
+          path: meta-review.json
+          if-no-files-found: error
+          retention-days: 30
