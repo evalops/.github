@@ -147,6 +147,38 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     refute_includes request_body.keys, "temperature"
   end
 
+  def test_build_lens_prompt_includes_review_context
+    pr_json = {
+      "title" => "Risky workflow",
+      "html_url" => "https://github.com/evalops/deploy/pull/1",
+      "draft" => false,
+      "base" => {
+        "ref" => "main",
+        "sha" => "base"
+      },
+      "head" => {
+        "ref" => "branch",
+        "sha" => "head"
+      }
+    }
+
+    prompt = EvalOpsPrLensReview.build_lens_prompt(
+      repo: "evalops/deploy",
+      pr: 1,
+      lens: "iam-blast-radius",
+      pr_json: pr_json,
+      file_summary: "modified\t.github/workflows/release.yml\t+10\t-2",
+      review_context: "Inline review comments:\n- cursor .github/workflows/release.yml:42: token now has write-all",
+      changed_files_text: "M\t.github/workflows/release.yml",
+      diff_text: "@@ workflow diff @@",
+      diff_truncated: false
+    )
+
+    assert_includes prompt, "Pull request context:"
+    assert_includes prompt, "token now has write-all"
+    assert_includes prompt, "Existing bot or human review comments are evidence"
+  end
+
   private
 
   def finding(title, confidence, priority, path, line)
