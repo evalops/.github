@@ -173,3 +173,31 @@ git diff --check
 
 If workflows changed and `actionlint` is available, run it on touched workflow
 files. Then check the PR's live GitHub Actions results before merging.
+
+### EvalOps PR Lens Review
+
+`.github/workflows/evalops-pr-lens-review.yml` sweeps open PRs in
+`evalops/platform`, `evalops/deploy`, and `evalops/maestro-internal` every two
+hours and can be run manually for specific `repo#number` targets. It fans out
+one reviewer per lens:
+
+- migration safety
+- NATS contract drift
+- Argo manifest skew
+- IAM blast radius
+- generated SDK delta
+- eval regression risk
+
+Each lens writes a stable commit status context named
+`evalops-pr-lens/<lens>`. The meta-review step ranks findings by confidence,
+updates `evalops-pr-lens/meta-review`, and only posts a PR comment when findings
+clear the configured high-confidence threshold.
+
+Required secrets in `evalops/.github`:
+
+- `EVALOPS_PR_LENS_TOKEN`: GitHub token with read/write access to the target
+  repos for statuses and PR comments.
+- `ANTHROPIC_API_KEY` or `EVALOPS_ANTHROPIC_API_KEY`: Anthropic key for Opus
+  lens reviewers.
+- `OPENAI_API_KEY` or `EVALOPS_OPENAI_API_KEY`: optional fallback when manually
+  dispatching with `provider=openai`.
