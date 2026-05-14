@@ -322,7 +322,6 @@ module EvalOpsPrLensReview
     request.body = JSON.generate(
       model: model,
       max_tokens: 6000,
-      temperature: 0,
       system: "You are a careful EvalOps PR reviewer. Return valid JSON only.",
       messages: [
         {

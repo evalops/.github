@@ -121,6 +121,32 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_includes body, "`evalops-pr-lens/iam-blast-radius`"
   end
 
+  def test_anthropic_request_omits_temperature_for_opus_4_7
+    request_body = nil
+    fake_response = Struct.new(:body) do
+      def is_a?(klass)
+        klass == Net::HTTPSuccess || super
+      end
+    end.new(JSON.generate({ "content" => [{ "text" => "{\"findings\":[]}" }] }))
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) do |request|
+      request_body = JSON.parse(request.body)
+      fake_response
+    end
+
+    http_start = ->(*_args, &block) { block.call(fake_http) }
+    Net::HTTP.stub(:start, http_start) do
+      EvalOpsPrLensReview.call_anthropic(
+        prompt: "Return JSON",
+        model: "claude-opus-4-7",
+        api_key: "test-key"
+      )
+    end
+
+    assert_equal "claude-opus-4-7", request_body.fetch("model")
+    refute_includes request_body.keys, "temperature"
+  end
+
   private
 
   def finding(title, confidence, priority, path, line)
