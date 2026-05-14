@@ -121,6 +121,17 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_includes body, "`evalops-pr-lens/iam-blast-radius`"
   end
 
+  def test_anthropic_request_body_omits_deprecated_temperature
+    body = EvalOpsPrLensReview.anthropic_request_body(
+      prompt: "Review this diff",
+      model: "claude-opus-4-7"
+    )
+
+    refute_includes body.keys, :temperature
+    assert_equal "claude-opus-4-7", body.fetch(:model)
+    assert_equal "Review this diff", body.fetch(:messages).fetch(0).fetch(:content)
+  end
+
   private
 
   def finding(title, confidence, priority, path, line)

@@ -319,18 +319,7 @@ module EvalOpsPrLensReview
     request["anthropic-version"] = "2023-06-01"
     request["content-type"] = "application/json"
     request["x-api-key"] = api_key
-    request.body = JSON.generate(
-      model: model,
-      max_tokens: 6000,
-      temperature: 0,
-      system: "You are a careful EvalOps PR reviewer. Return valid JSON only.",
-      messages: [
-        {
-          role: "user",
-          content: prompt
-        }
-      ]
-    )
+    request.body = JSON.generate(anthropic_request_body(prompt: prompt, model: model))
 
     response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: true) do |http|
       http.request(request)
@@ -341,6 +330,20 @@ module EvalOpsPrLensReview
 
     body = JSON.parse(response.body)
     body.fetch("content").map { |part| part["text"] }.compact.join("\n")
+  end
+
+  def anthropic_request_body(prompt:, model:)
+    {
+      model: model,
+      max_tokens: 6000,
+      system: "You are a careful EvalOps PR reviewer. Return valid JSON only.",
+      messages: [
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
+    }
   end
 
   def call_openai(prompt:, model:, api_key:)
