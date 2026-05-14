@@ -77,6 +77,7 @@ module EvalOpsPrLensReview
   DEFAULT_MODEL = "claude-opus-4-7"
   DEFAULT_MAX_DIFF_BYTES = 180_000
   MAX_FINDINGS_PER_COMMENT = 12
+  MAX_CONTEXT_ITEMS = 25
 
   module_function
 
@@ -245,7 +246,60 @@ module EvalOpsPrLensReview
     end.join("\n")
   end
 
-  def build_lens_prompt(repo:, pr:, lens:, pr_json:, file_summary:, changed_files_text:, diff_text:, diff_truncated:)
+  def short_text(value, max_bytes: 1_500)
+    text = value.to_s.strip
+    return "" if text.empty?
+    return text if text.bytesize <= max_bytes
+
+    "#{text.byteslice(0, max_bytes)}\n...[truncated]"
+  end
+
+  def list_section(title, rows)
+    body = rows.compact.map(&:strip).reject(&:empty?)
+    return "#{title}:\n(none)" if body.empty?
+
+    "#{title}:\n#{body.first(MAX_CONTEXT_ITEMS).join("\n")}"
+  end
+
+  def pr_review_context(repo:, pr:, pr_json:, head_sha:)
+    issue_comments = gh_api_json("repos/#{repo}/issues/#{pr}/comments?per_page=100")
+    reviews = gh_api_json("repos/#{repo}/pulls/#{pr}/reviews?per_page=100")
+    review_comments = gh_api_json("repos/#{repo}/pulls/#{pr}/comments?per_page=100")
+    check_runs = gh_api_json("repos/#{repo}/commits/#{head_sha}/check-runs?per_page=100").fetch("check_runs", [])
+    combined_status = gh_api_json("repos/#{repo}/commits/#{head_sha}/status")
+
+    comments = issue_comments.last(MAX_CONTEXT_ITEMS).map do |comment|
+      "- #{comment.dig("user", "login")} at #{comment.fetch("created_at", "")}: #{short_text(comment["body"], max_bytes: 900)}"
+    end
+    review_rows = reviews.last(MAX_CONTEXT_ITEMS).map do |review|
+      body = short_text(review["body"], max_bytes: 900)
+      "- #{review.dig("user", "login")} #{review.fetch("state", "")} at #{review.fetch("submitted_at", "")}: #{body.empty? ? "(no body)" : body}"
+    end
+    inline_rows = review_comments.last(MAX_CONTEXT_ITEMS).map do |comment|
+      line = comment["line"] || comment["original_line"] || "?"
+      "- #{comment.dig("user", "login")} #{comment.fetch("path", "unknown")}:#{line}: #{short_text(comment["body"], max_bytes: 900)}"
+    end
+    check_rows = check_runs.select do |check|
+      !%w[success skipped neutral].include?(check["conclusion"].to_s.downcase)
+    end.map do |check|
+      "- check-run #{check.fetch("name", "unknown")}: status=#{check.fetch("status", "")} conclusion=#{check["conclusion"] || "pending"}"
+    end
+    status_rows = Array(combined_status["statuses"]).select do |status|
+      status["state"].to_s != "success"
+    end.map do |status|
+      "- status #{status.fetch("context", "unknown")}: state=#{status.fetch("state", "")} description=#{status["description"]}"
+    end
+
+    [
+      "Pull request body:\n#{short_text(pr_json["body"], max_bytes: 2_500).empty? ? "(none)" : short_text(pr_json["body"], max_bytes: 2_500)}",
+      list_section("Issue comments", comments),
+      list_section("PR review bodies", review_rows),
+      list_section("Inline review comments", inline_rows),
+      list_section("Non-green checks and statuses", check_rows + status_rows)
+    ].join("\n\n")
+  end
+
+  def build_lens_prompt(repo:, pr:, lens:, pr_json:, file_summary:, review_context:, changed_files_text:, diff_text:, diff_truncated:)
     lens_config = LENSES.fetch(valid_lens!(lens))
     <<~PROMPT
       You are reviewing an EvalOps pull request through one narrow lens: #{lens_config.fetch(:name)}.
@@ -265,6 +319,8 @@ module EvalOpsPrLensReview
       - Report only actionable defects introduced by this PR that fit the lens.
       - Prefer no finding over a speculative finding.
       - Confidence must reflect direct evidence from the diff or live PR metadata.
+      - Existing bot or human review comments are evidence, but verify them
+        against the diff before turning them into a finding.
       - Use head-side file paths and line numbers where possible.
       - If no high-signal finding exists, return an empty findings array.
       - Do not ask for broad architecture redesigns, style-only changes, or unrelated cleanup.
@@ -291,6 +347,9 @@ module EvalOpsPrLensReview
 
       Pull request files from GitHub:
       #{file_summary.empty? ? "(no file metadata)" : file_summary}
+
+      Pull request context:
+      #{review_context.empty? ? "(no PR context)" : review_context}
 
       Changed files from git:
       #{changed_files_text.empty? ? "(no changed files)" : changed_files_text}
@@ -455,6 +514,7 @@ module EvalOpsPrLensReview
   def run_lens(repo:, pr:, lens:, workspace:, base_sha:, head_sha:, output:, provider:, model:, max_diff_bytes:)
     pr_json = pr_metadata(repo: repo, pr: pr)
     file_summary = pr_file_summary(repo: repo, pr: pr)
+    review_context = pr_review_context(repo: repo, pr: pr, pr_json: pr_json, head_sha: head_sha)
     changed_files_text = changed_files(workspace: workspace, base_sha: base_sha, head_sha: head_sha)
     diff_text, diff_truncated = git_diff(
       workspace: workspace,
@@ -468,6 +528,7 @@ module EvalOpsPrLensReview
       lens: lens,
       pr_json: pr_json,
       file_summary: file_summary,
+      review_context: review_context,
       changed_files_text: changed_files_text,
       diff_text: diff_text,
       diff_truncated: diff_truncated
