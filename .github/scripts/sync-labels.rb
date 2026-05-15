@@ -62,6 +62,10 @@ module EvalOpsLabelSync
     end
   end
 
+  def path_component_escape(value)
+    URI.encode_www_form_component(value.to_s).gsub("+", "%20")
+  end
+
   def gh_api(*args, input: nil, allow_failure: false)
     command = ["gh", "api", *args]
     if input
@@ -103,7 +107,7 @@ module EvalOpsLabelSync
   end
 
   def repo_opted_out?(repo, opt_out_file:)
-    path = opt_out_file.split("/").map { |part| URI.encode_www_form_component(part) }.join("/")
+    path = opt_out_file.split("/").map { |part| path_component_escape(part) }.join("/")
     _stdout, _stderr, status = gh_api("repos/#{repo}/contents/#{path}", allow_failure: true)
     status.success?
   end
@@ -180,7 +184,7 @@ module EvalOpsLabelSync
       )
     end
     plan.fetch("updates").each do |label|
-      encoded = URI.encode_www_form_component(label.fetch("name"))
+      encoded = path_component_escape(label.fetch("name"))
       gh_api(
         "--method",
         "PATCH",

@@ -61,6 +61,11 @@ class SyncLabelsTest < Minitest::Test
     assert_equal ["opted out"], plan.fetch("skips")
   end
 
+  def test_label_names_are_escaped_as_path_components
+    assert_equal "autorelease%3A%20pending", EvalOpsLabelSync.path_component_escape("autorelease: pending")
+    assert_equal "area%2Fplatform", EvalOpsLabelSync.path_component_escape("area/platform")
+  end
+
   def test_markdown_report_summarizes_repo_diffs
     report = {
       "generated_at" => "2026-05-15T12:00:00Z",
