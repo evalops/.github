@@ -1,0 +1,107 @@
+name: agent-mcp-config-rollout
+
+on:
+  pull_request:
+    paths:
+      - .github/agent-mcp/templates/**
+      - .github/scripts/sync-agent-mcp-config.rb
+      - .github/workflows/agent-mcp-config-rollout.yml
+      - test/sync_agent_mcp_config_test.rb
+  workflow_dispatch:
+    inputs:
+      target_repos:
+        description: "Comma-separated repos. Empty means all active public evalops repos."
+        required: false
+        default: ""
+      apply:
+        description: "Open rollout PRs"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate templates against empty workspace
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          ruby .github/scripts/sync-agent-mcp-config.rb \
+            --workspace "${tmp}" \
+            --templates .github/agent-mcp/templates \
+            --write \
+            --json-output agent-mcp-config-report.json \
+            --markdown-output agent-mcp-config-report.md
+          ruby .github/scripts/sync-agent-mcp-config.rb \
+            --workspace "${tmp}" \
+            --templates .github/agent-mcp/templates \
+            --check \
+            --json-output agent-mcp-config-check.json \
+            --markdown-output agent-mcp-config-check.md
+          cat agent-mcp-config-report.md >> "${GITHUB_STEP_SUMMARY}"
+
+  rollout:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_MCP_ROLLOUT_TOKEN || secrets.EVALOPS_ORG_WRITE_TOKEN }}
+      TARGET_REPOS: ${{ inputs.target_repos }}
+      BRANCH_NAME: codex/evalops-agent-mcp-config
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Require rollout token
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set EVALOPS_MCP_ROLLOUT_TOKEN or EVALOPS_ORG_WRITE_TOKEN with cross-repo contents:write and pull-requests:write access."
+            exit 2
+          fi
+
+      - name: Open rollout PRs
+        run: |
+          set -euo pipefail
+          git config --global user.name "evalops-automation"
+          git config --global user.email "automation@evalops.dev"
+
+          if [ -n "${TARGET_REPOS}" ]; then
+            repos="$(echo "${TARGET_REPOS}" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sed '/^$/d')"
+          else
+            repos="$(gh repo list evalops --limit 1000 --json nameWithOwner,isArchived,visibility --jq '.[] | select((.isArchived|not) and .visibility == "PUBLIC") | .nameWithOwner')"
+          fi
+
+          while IFS= read -r repo; do
+            [ -n "${repo}" ] || continue
+            workdir="$(mktemp -d)"
+            echo "Rolling out EvalOps MCP config to ${repo}"
+            gh repo clone "${repo}" "${workdir}/repo" -- --depth=1
+            cd "${workdir}/repo"
+            git switch -c "${BRANCH_NAME}"
+            ruby "${GITHUB_WORKSPACE}/.github/scripts/sync-agent-mcp-config.rb" \
+              --workspace "${PWD}" \
+              --templates "${GITHUB_WORKSPACE}/.github/agent-mcp/templates" \
+              --write \
+              --json-output "${workdir}/agent-mcp-config-report.json" \
+              --markdown-output "${workdir}/agent-mcp-config-report.md"
+            if git diff --quiet; then
+              echo "${repo}: already in sync"
+              cd "${GITHUB_WORKSPACE}"
+              continue
+            fi
+            git add .mcp.json .codex/config.toml .cursor/mcp.json AGENTS.md .gitignore
+            git commit -m "chore: add EvalOps agent MCP config"
+            git push --force-with-lease origin "${BRANCH_NAME}"
+            gh pr create \
+              --repo "${repo}" \
+              --head "${BRANCH_NAME}" \
+              --title "chore: add EvalOps agent MCP config" \
+              --body-file "${workdir}/agent-mcp-config-report.md" || true
+            cd "${GITHUB_WORKSPACE}"
+          done <<< "${repos}"

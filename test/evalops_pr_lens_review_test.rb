@@ -147,6 +147,37 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     refute_includes request_body.keys, "temperature"
   end
 
+  def test_gh_api_uses_input_flag_for_request_body
+    captured = nil
+    ok_status = Object.new
+    ok_status.define_singleton_method(:success?) { true }
+    capture = lambda do |env, *command, stdin_data: nil|
+      captured = {
+        env: env,
+        command: command,
+        stdin_data: stdin_data
+      }
+      ["{}", "", ok_status]
+    end
+
+    Open3.stub(:capture3, capture) do
+      EvalOpsPrLensReview.gh_api(
+        "--method",
+        "POST",
+        "repos/evalops/.github/issues/1/comments",
+        input: JSON.generate(body: "hello"),
+        token: "test-token"
+      )
+    end
+
+    assert_equal "test-token", captured.fetch(:env).fetch("GH_TOKEN")
+    assert_equal(
+      ["gh", "api", "--method", "POST", "repos/evalops/.github/issues/1/comments", "--input", "-"],
+      captured.fetch(:command)
+    )
+    assert_equal "{\"body\":\"hello\"}", captured.fetch(:stdin_data)
+  end
+
   def test_build_lens_prompt_includes_review_context
     pr_json = {
       "title" => "Risky workflow",

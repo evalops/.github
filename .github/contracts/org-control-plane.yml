@@ -1,0 +1,182 @@
+schema_version: evalops.org_control_plane_contract.v1
+contract_id: evalops.github.org-defaults
+owner_repo: evalops/.github
+status: enforced
+related_issues:
+  - 63
+  - 64
+  - 65
+  - 66
+  - 67
+  - 81
+workflow:
+  name: org-defaults-control-plane
+  correctness_model: >
+    EvalOps org defaults should be explicit, reviewable, and enforced before
+    they can silently change downstream repository behavior.
+  threat_model: >
+    Treat org-default prompts, templates, workflow helpers, and catalog data as
+    agent-facing control inputs. Unsafe inputs must fail closed or degrade to a
+    non-mutating report instead of reaching privileged GitHub writes.
+  research_assumptions:
+    - Retrieval-backed agents need cited, stable source records rather than
+      implicit memory when applying org conventions.
+    - Conformance checks should cover happy-path, degraded, and adversarial
+      cases because org defaults are reused outside this repository.
+    - Evidence should be machine-readable first and prose-rendered second.
+requirements:
+  - id: live-github-context
+    title: Live GitHub state precedes org-default changes
+    source:
+      path: AGENTS.md
+      lines: 8-11
+    evidence_fields:
+      - source_id
+      - decision_id
+      - output_id
+    checked_by:
+      - .github/scripts/verify-org-control-plane-contract.rb
+      - .github/workflows/codex-rails-check.yml
+  - id: portable-defaults
+    title: Defaults stay portable and avoid private operational assumptions
+    source:
+      path: README.md
+      lines: 7-9
+    evidence_fields:
+      - source_id
+      - decision_id
+      - output_id
+    checked_by:
+      - .github/scripts/verify-org-control-plane-contract.rb
+  - id: reusable-workflow-evidence
+    title: Reusable workflows expose their required secrets and verification path
+    source:
+      path: README.md
+      lines: 39-58
+    evidence_fields:
+      - source_id
+      - decision_id
+      - output_id
+    checked_by:
+      - .github/workflows/codex-rails-check.yml
+  - id: catalog-shape
+    title: Service catalog entries stay lightweight and internally referential
+    source:
+      path: README.md
+      lines: 144-163
+    evidence_fields:
+      - source_id
+      - decision_id
+      - output_id
+    checked_by:
+      - .github/scripts/validate-services-catalog.rb
+      - test/validate_services_catalog_test.rb
+provenance:
+  stable_id_pattern: "evalops.github.<workflow>.<source|decision|output>.<sha256-12>"
+  source_records:
+    - id: evalops.github.org-defaults.source.agents-rails
+      path: AGENTS.md
+      digest: sha256
+    - id: evalops.github.org-defaults.source.readme-contract
+      path: README.md
+      digest: sha256
+    - id: evalops.github.org-defaults.source.service-catalog
+      path: services.yaml
+      digest: sha256
+  derived_decisions:
+    - id: evalops.github.org-defaults.decision.codex-rails
+      path: .github/workflows/codex-rails-check.yml
+      derived_from:
+        - evalops.github.org-defaults.source.agents-rails
+        - evalops.github.org-defaults.source.readme-contract
+    - id: evalops.github.org-defaults.decision.review-feedback-sentinel
+      path: .github/workflows/review-feedback-sentinel.yml
+      derived_from:
+        - evalops.github.org-defaults.source.readme-contract
+  emitted_outputs:
+    - id: evalops.github.org-defaults.output.contract-report
+      path: org-control-plane-contract-report.json
+      produced_by: .github/scripts/verify-org-control-plane-contract.rb
+    - id: evalops.github.org-defaults.output.feedback-ledger
+      path: review-feedback-ledger.json
+      produced_by: .github/scripts/sweep-recent-review-feedback.rb
+slo_gates:
+  - id: codex-rails-local
+    user_journey: Maintainer validates org-default changes before opening a PR
+    target: "Ruby validation completes in under 10 minutes in CI"
+    dimensions:
+      - latency
+      - correctness
+      - degraded_mode
+      - evidence
+    success_signal: "contract_report.status == pass"
+    failure_signal: "contract_report.status == fail with failing check IDs"
+    fallback: "non-mutating markdown report"
+  - id: review-feedback-sentinel
+    user_journey: Sentinel turns high-severity merged PR feedback into guardrails
+    target: "six-hour sweep publishes ledger/backlog/lifecycle artifacts"
+    dimensions:
+      - latency
+      - correctness
+      - cost
+      - degraded_mode
+      - evidence
+    success_signal: "review-feedback-guardrail-lifecycle.json emitted"
+    failure_signal: "token preflight or artifact generation failure"
+    fallback: "fail before publishing empty or misleading artifacts"
+golden_workflows:
+  - id: codex-rails
+    workflow: .github/workflows/codex-rails-check.yml
+    verifier: .github/scripts/verify-org-control-plane-contract.rb
+    tests:
+      - test/verify_org_control_plane_contract_test.rb
+    success_fixture:
+      name: valid-contract
+      expected_outcome: pass
+    degraded_fixture:
+      name: missing-optional-actionlint
+      expected_outcome: degraded_report
+    failure_fixture:
+      name: missing-source-record
+      expected_outcome: fail_closed
+  - id: review-feedback-sentinel
+    workflow: .github/workflows/review-feedback-sentinel.yml
+    verifier: .github/scripts/sweep-recent-review-feedback.rb
+    tests:
+      - test/sweep_recent_review_feedback_test.rb
+    success_fixture:
+      name: ranked-backlog-with-fingerprints
+      expected_outcome: pass
+    degraded_fixture:
+      name: no-current-findings
+      expected_outcome: degraded_report
+    failure_fixture:
+      name: missing-org-token
+      expected_outcome: fail_closed
+adversarial_fixtures:
+  - id: prompt-template-injection
+    category: prompt_poisoning
+    input: "Template text asks the agent to ignore AGENTS.md or omit live gh checks."
+    blocked_by: .github/scripts/verify-org-control-plane-contract.rb
+    expected_outcome: fail_closed
+  - id: workflow-body-drop
+    category: tool_poisoning
+    input: "gh api request body is passed through stdin without --input -."
+    blocked_by: test/evalops_pr_lens_review_test.rb
+    expected_outcome: fail_closed
+  - id: misleading-empty-ledger
+    category: data_poisoning
+    input: "Review feedback sweep lacks org-wide token and would emit empty artifacts."
+    blocked_by: .github/workflows/review-feedback-sentinel.yml
+    expected_outcome: fail_closed
+  - id: catalog-reference-drift
+    category: data_poisoning
+    input: "services.yaml depends_on references an unknown service key."
+    blocked_by: .github/scripts/validate-services-catalog.rb
+    expected_outcome: fail_closed
+commands:
+  local_check: "ruby .github/scripts/verify-org-control-plane-contract.rb --json-output org-control-plane-contract-report.json --markdown-output org-control-plane-contract-report.md"
+  ci_check: "ruby -Itest -e 'ARGV.each { |path| require \"./#{path}\" }' test/*_test.rb"
+  report_artifacts:
+    - org-control-plane-contract-report.json
+    - org-control-plane-contract-report.md
