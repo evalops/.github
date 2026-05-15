@@ -5,9 +5,13 @@ on:
     paths:
       - "AGENTS.md"
       - "**/AGENTS.md"
+      - "labels.yml"
       - "README.md"
       - ".agents/skills/**"
+      - ".github/agent-mcp/**"
+      - ".github/codex/hooks/**"
       - ".github/codex/schemas/**"
+      - ".github/contracts/**"
       - ".github/scripts/**"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/pull_request_template.md"
@@ -97,6 +101,31 @@ jobs:
             exit 0
           fi
           ruby -e 'require "json"; ARGV.each { |f| JSON.parse(File.read(f)); puts "ok #{f}" }' "${files[@]}"
+
+      - name: Validate org control plane contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/contracts/org-control-plane.yml ]; then
+            echo "No org control plane contract found."
+            exit 0
+          fi
+
+          ruby .github/scripts/verify-org-control-plane-contract.rb \
+            --json-output org-control-plane-contract-report.json \
+            --markdown-output org-control-plane-contract-report.md
+          cat org-control-plane-contract-report.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Validate canonical labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f labels.yml ]; then
+            echo "No labels.yml found."
+            exit 0
+          fi
+
+          ruby .github/scripts/sync-labels.rb --validate-only --labels labels.yml
 
       - name: Check AGENTS.md files
         shell: bash

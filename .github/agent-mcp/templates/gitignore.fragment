@@ -1,0 +1,3 @@
+# EvalOps MCP local credentials
+.env
+.env.local

@@ -1,0 +1,12 @@
+# Example Codex hook pack for EvalOps repos. Install at user or repo scope and
+# adjust command paths to match the checked-out evalops/.github location.
+
+[hooks.SessionStart.evalops_context]
+command = "ruby .github/scripts/evalops-codex-hook-guard.rb session-start"
+
+[hooks.PreToolUse.evalops_git_guard]
+matcher = "Bash"
+command = "ruby .github/scripts/evalops-codex-hook-guard.rb pretool-git"
+
+[hooks.Stop.evalops_review_readiness]
+command = "ruby .github/scripts/evalops-codex-hook-guard.rb stop-readiness"

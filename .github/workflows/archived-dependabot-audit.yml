@@ -1,0 +1,45 @@
+name: archived-dependabot-audit
+
+on:
+  schedule:
+    - cron: "18 15 * * 1"
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Comma-separated archived repos. Empty means discover all archived evalops repos."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_ORG_READ_TOKEN || github.token }}
+      REPOS: ${{ inputs.repos || '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Audit archived Dependabot state
+        run: |
+          set -euo pipefail
+          args=(--owner evalops --json-output archived-dependabot-audit.json --markdown-output archived-dependabot-audit.md)
+          if [ -n "${REPOS}" ]; then
+            args+=(--repos "${REPOS}")
+          fi
+          ruby .github/scripts/audit-archived-dependabot.rb "${args[@]}"
+          cat archived-dependabot-audit.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: archived-dependabot-audit
+          path: |
+            archived-dependabot-audit.json
+            archived-dependabot-audit.md
+          if-no-files-found: error
+          retention-days: 30

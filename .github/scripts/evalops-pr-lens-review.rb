@@ -130,6 +130,7 @@ module EvalOpsPrLensReview
     command = ["gh", "api", *args]
 
     if input
+      command += ["--input", "-"]
       stdout, stderr, status = Open3.capture3(env, *command, stdin_data: input)
     else
       stdout, stderr, status = Open3.capture3(env, *command)
