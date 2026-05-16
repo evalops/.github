@@ -54,6 +54,7 @@ lanes to downstream repositories:
 - `codex-ci-triage.yml` triages a specific failed Actions run.
 - `codex-post-merge-verify.yml` checks default-branch health after merges.
 - `codex-label-churn-audit.yml` audits PR label mutation loops.
+- `pysa.yml` runs Pyre/Pysa taint analysis for Python repos.
 
 Each template expects an `OPENAI_API_KEY` repository secret. Repositories that
 need stronger, repo-specific behavior should copy the matching prompt from
@@ -146,6 +147,40 @@ jobs:
     with:
       require_agents: true
 ```
+
+### Pysa Static Analysis
+
+Use `.github/workflows/pysa.yml` to add Pyre/Pysa taint analysis to Python
+repositories. Downstream repos can adopt it from the workflow template picker or
+with:
+
+```yaml
+name: Pysa static analysis
+
+on:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "requirements*.txt"
+      - ".pyre_configuration*"
+      - ".pysa/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pysa:
+    uses: evalops/.github/.github/workflows/pysa.yml@main
+    with:
+      source_directories: "."
+      taint_models_path: ".pysa"
+```
+
+Repos with custom dependency bootstrapping can pass `requirements_file` or
+`setup_command`. Repos without committed Pyre configuration get a minimal
+generated `.pyre_configuration` from `source_directories`.
 
 ## Service Catalog
 

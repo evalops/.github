@@ -1,0 +1,130 @@
+name: pysa
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: "Python version used to install and run Pyre/Pysa"
+        required: false
+        type: string
+        default: "3.12"
+      runner_label:
+        description: "Runner label used for Pysa"
+        required: false
+        type: string
+        default: blacksmith-4vcpu-ubuntu-2404
+      working_directory:
+        description: "Repository-relative directory to analyze"
+        required: false
+        type: string
+        default: "."
+      source_directories:
+        description: "Comma-separated Python source directories for generated Pyre config"
+        required: false
+        type: string
+        default: "."
+      taint_models_path:
+        description: "Optional Pysa taint-model directory"
+        required: false
+        type: string
+        default: ".pysa"
+      requirements_file:
+        description: "Optional requirements file to install before analysis"
+        required: false
+        type: string
+        default: ""
+      setup_command:
+        description: "Optional shell command to install repo-specific dependencies"
+        required: false
+        type: string
+        default: ""
+      pyre_package:
+        description: "pip package spec for Pyre/Pysa"
+        required: false
+        type: string
+        default: "pyre-check"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      PYRE_PACKAGE: ${{ inputs.pyre_package }}
+      REQUIREMENTS_FILE: ${{ inputs.requirements_file }}
+      SETUP_COMMAND: ${{ inputs.setup_command }}
+      SOURCE_DIRECTORIES: ${{ inputs.source_directories }}
+      TAINT_MODELS_PATH: ${{ inputs.taint_models_path }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -n "${REQUIREMENTS_FILE}" ]; then
+            python -m pip install -r "${REQUIREMENTS_FILE}"
+          fi
+          if [ -n "${SETUP_COMMAND}" ]; then
+            bash -lc "${SETUP_COMMAND}"
+          fi
+          python -m pip install "${PYRE_PACKAGE}"
+
+      - name: Ensure Pyre configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f ".pyre_configuration" ]; then
+            echo "using repository Pyre configuration"
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          import os
+
+          sources = [
+              item.strip()
+              for item in os.environ["SOURCE_DIRECTORIES"].split(",")
+              if item.strip()
+          ]
+          if not sources:
+              sources = ["."]
+          with open(".pyre_configuration", "w", encoding="utf-8") as fh:
+              json.dump({"source_directories": sources}, fh, indent=2)
+              fh.write("\n")
+          PY
+
+      - name: Run Pysa
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pysa-results
+          args=(analyze --save-results-to pysa-results)
+          if [ -n "${TAINT_MODELS_PATH}" ]; then
+            if [ -d "${TAINT_MODELS_PATH}" ]; then
+              args+=(--taint-models-path "${TAINT_MODELS_PATH}")
+            else
+              echo "::warning::Pysa taint model path '${TAINT_MODELS_PATH}' does not exist; running with bundled models only."
+            fi
+          fi
+          pyre "${args[@]}" | tee pysa-output.txt
+
+      - name: Upload Pysa output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pysa-output
+          path: |
+            ${{ inputs.working_directory }}/pysa-output.txt
+            ${{ inputs.working_directory }}/pysa-results/**
+          if-no-files-found: ignore
