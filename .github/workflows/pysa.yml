@@ -84,7 +84,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f ".pyre_configuration" ] || [ -f ".pyre_configuration.local" ]; then
+          if [ -f ".pyre_configuration" ]; then
             echo "using repository Pyre configuration"
             exit 0
           fi
