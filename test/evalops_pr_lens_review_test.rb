@@ -23,6 +23,15 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_equal [7], filter.fetch("evalops/deploy")
   end
 
+  def test_parse_pr_filter_accepts_bare_pr_number_for_single_repo_dispatch
+    filter = EvalOpsPrLensReview.parse_pr_filter(
+      "2023",
+      repos: %w[evalops/platform]
+    )
+
+    assert_equal [2023], filter.fetch("evalops/platform")
+  end
+
   def test_matrix_for_uses_stable_lens_contexts
     prs = [
       {

@@ -306,8 +306,9 @@ ruby .github/scripts/audit-archived-dependabot.rb \
 
 `.github/workflows/evalops-pr-lens-review.yml` sweeps open PRs in
 `evalops/platform`, `evalops/deploy`, and `evalops/maestro-internal` every two
-hours and can be run manually for specific `repo#number` targets. It fans out
-one reviewer per lens:
+hours, can be run manually for specific `repo#number` targets, and accepts
+machine dispatches for on-demand EvalOpsBot review requests. It fans out one
+reviewer per lens:
 
 - migration safety
 - NATS contract drift
@@ -329,3 +330,35 @@ Required secrets in `evalops/.github`:
   lens reviewers.
 - `OPENAI_API_KEY` or `EVALOPS_OPENAI_API_KEY`: optional fallback when manually
   dispatching with `provider=openai`.
+
+#### EvalOpsBot Review Requests
+
+`EvalOpsBot` review requests should enter through a small webhook relay, not
+per-repository workflow copies. The relay should listen for GitHub
+`pull_request` webhook deliveries where:
+
+- `action` is `review_requested`
+- `requested_reviewer.login` is `EvalOpsBot`
+- `repository.full_name` is an EvalOps repository
+- `pull_request.number` is present
+
+When those checks pass, dispatch this repository's review workflow:
+
+```bash
+gh api --method POST repos/evalops/.github/dispatches --input - <<'JSON'
+{
+  "event_type": "evalopsbot-review-requested",
+  "client_payload": {
+    "target_repo": "evalops/deploy",
+    "target_pr": "deploy#1234",
+    "requested_reviewer": "EvalOpsBot"
+  }
+}
+JSON
+```
+
+The workflow also accepts `target_prs`, `target_repos`, `provider`, `model`,
+`max_diff_bytes`, and `min_confidence` in `client_payload` for controlled
+operator overrides. Keep the relay token scoped to dispatching workflows in
+`evalops/.github`; the review workflow itself owns the cross-repo read/write
+token and model-provider credentials.
