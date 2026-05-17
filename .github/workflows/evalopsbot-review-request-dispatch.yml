@@ -1,0 +1,70 @@
+name: EvalOpsBot review request dispatch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      reviewer:
+        description: "GitHub login that should trigger deep review"
+        required: false
+        default: "EvalOpsBot"
+      dry_run:
+        description: "Discover matching PRs without dispatching deep review"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evalopsbot-review-request-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
+      REVIEWER: ${{ github.event_name == 'workflow_dispatch' && inputs.reviewer || 'EvalOpsBot' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Require cross-repo review token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set EVALOPS_PR_LENS_TOKEN with org PR search, status write, and repository_dispatch access."
+            exit 2
+          fi
+
+      - name: Dispatch requested reviews
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            dispatch-review-requests
+            --owner evalops
+            --reviewer "${REVIEWER}"
+            --limit 100
+            --target-url "${RUN_URL}"
+            --output evalopsbot-review-request-dispatch.json
+            --github-output "${GITHUB_OUTPUT}"
+          )
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          ruby .github/scripts/evalops-pr-lens-review.rb "${args[@]}"
+
+      - name: Upload dispatch ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: evalopsbot-review-request-dispatch
+          path: evalopsbot-review-request-dispatch.json
+          if-no-files-found: error
+          retention-days: 30

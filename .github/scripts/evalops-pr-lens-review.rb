@@ -74,6 +74,8 @@ module EvalOpsPrLensReview
   }.freeze
 
   MARKER = "<!-- evalops-pr-lens-review -->"
+  REVIEW_REQUESTED_DISPATCH_EVENT = "evalopsbot-review-requested"
+  REVIEW_REQUESTED_DISPATCH_SOURCE = "evalopsbot-review-request-dispatch"
   DEFAULT_MIN_CONFIDENCE = 0.82
   DEFAULT_MODEL = "claude-opus-4-7"
   DEFAULT_MAX_DIFF_BYTES = 180_000
@@ -148,6 +150,121 @@ module EvalOpsPrLensReview
     return nil if raw.strip.empty?
 
     JSON.parse(raw)
+  end
+
+  def gh_search_review_requested(owner:, reviewer:, limit:, token: ENV["GH_TOKEN"])
+    env = {}
+    env["GH_TOKEN"] = token if token && !token.empty?
+    command = [
+      "gh", "search", "prs",
+      "--owner", owner,
+      "--review-requested", reviewer,
+      "--state", "open",
+      "--json", "repository,number,title,url,isDraft,updatedAt",
+      "--limit", limit.to_s
+    ]
+    stdout, stderr, status = Open3.capture3(env, *command)
+    unless status.success?
+      raise "gh search prs failed: #{stderr.empty? ? stdout : stderr}"
+    end
+
+    JSON.parse(stdout)
+  end
+
+  def normalize_search_pull_requests(rows)
+    rows.map do |row|
+      repo = row.dig("repository", "nameWithOwner")
+      next if repo.to_s.empty?
+
+      {
+        "repo" => normalize_repo(repo),
+        "repo_slug" => normalize_repo(repo).tr("/", "-"),
+        "number" => Integer(row.fetch("number")),
+        "title" => row.fetch("title", ""),
+        "url" => row.fetch("url", ""),
+        "draft" => !!row["isDraft"],
+        "updated_at" => row.fetch("updatedAt", nil)
+      }
+    rescue ArgumentError, KeyError, TypeError
+      nil
+    end.compact.uniq { |pr| [pr.fetch("repo"), pr.fetch("number")] }
+  end
+
+  def review_requested_prs(owner:, reviewer:, limit:)
+    normalize_search_pull_requests(
+      gh_search_review_requested(owner: owner, reviewer: reviewer, limit: limit)
+    )
+  end
+
+  def pr_head_sha(repo:, pr:)
+    pr_metadata(repo: repo, pr: pr).fetch("head").fetch("sha")
+  end
+
+  def pr_status_contexts(repo:, head_sha:)
+    status = gh_api_json("repos/#{repo}/commits/#{head_sha}/status")
+    Array(status.fetch("statuses", [])).map { |row| row.fetch("context", "") }
+  end
+
+  def review_started_for_head?(repo:, head_sha:)
+    pr_status_contexts(repo: repo, head_sha: head_sha).include?(meta_context)
+  end
+
+  def dispatch_review_requested(repo:, pr:, requested_reviewer:)
+    payload = {
+      event_type: REVIEW_REQUESTED_DISPATCH_EVENT,
+      client_payload: {
+        target_repo: repo,
+        target_pr: "#{repo}##{pr}",
+        requested_reviewer: requested_reviewer,
+        source: REVIEW_REQUESTED_DISPATCH_SOURCE
+      }
+    }
+    gh_api("--method", "POST", "repos/evalops/.github/dispatches", input: JSON.generate(payload))
+  end
+
+  def mark_review_queued(repo:, head_sha:, target_url:)
+    post_status(
+      repo: repo,
+      sha: head_sha,
+      context: meta_context,
+      state: "pending",
+      description: "Queued EvalOpsBot requested deep review",
+      target_url: target_url
+    )
+  end
+
+  def dispatch_requested_reviews(owner:, reviewer:, limit:, dry_run:, target_url:, output: nil)
+    candidates = review_requested_prs(owner: owner, reviewer: reviewer, limit: limit)
+    results = candidates.map do |candidate|
+      repo = candidate.fetch("repo")
+      pr = candidate.fetch("number")
+      head_sha = pr_head_sha(repo: repo, pr: pr)
+      row = candidate.merge("head_sha" => head_sha)
+
+      if review_started_for_head?(repo: repo, head_sha: head_sha)
+        row.merge("action" => "skipped", "reason" => "review already queued or completed for head sha")
+      elsif dry_run
+        row.merge("action" => "would_dispatch")
+      else
+        dispatch_review_requested(repo: repo, pr: pr, requested_reviewer: reviewer)
+        mark_review_queued(repo: repo, head_sha: head_sha, target_url: target_url)
+        row.merge("action" => "dispatched")
+      end
+    end
+
+    summary = {
+      "schema_version" => 1,
+      "generated_at" => Time.now.utc.iso8601,
+      "owner" => owner,
+      "requested_reviewer" => reviewer,
+      "dry_run" => dry_run,
+      "candidate_count" => candidates.length,
+      "dispatched_count" => results.count { |row| row.fetch("action") == "dispatched" },
+      "skipped_count" => results.count { |row| row.fetch("action") == "skipped" },
+      "results" => results
+    }
+    File.write(output, JSON.pretty_generate(summary)) if output
+    summary
   end
 
   def discover_open_prs(repos:, pr_filter: nil)
@@ -820,8 +937,34 @@ if $PROGRAM_NAME == __FILE__
 
     result = EvalOpsPrLensReview.meta_review(**options)
     puts "Published #{result.fetch("published_findings").length} high-confidence finding(s)."
+  when "dispatch-review-requests"
+    options = {
+      owner: "evalops",
+      reviewer: "EvalOpsBot",
+      limit: 100,
+      dry_run: false,
+      target_url: EvalOpsPrLensReview.run_url
+    }
+    OptionParser.new do |parser|
+      parser.on("--owner OWNER") { |value| options[:owner] = value }
+      parser.on("--reviewer LOGIN") { |value| options[:reviewer] = value }
+      parser.on("--limit NUMBER", Integer) { |value| options[:limit] = value }
+      parser.on("--dry-run") { options[:dry_run] = true }
+      parser.on("--target-url URL") { |value| options[:target_url] = value }
+      parser.on("--output PATH") { |value| options[:output] = value }
+      parser.on("--github-output PATH") { |value| options[:github_output] = value }
+    end.parse!
+
+    result = EvalOpsPrLensReview.dispatch_requested_reviews(**options.slice(:owner, :reviewer, :limit, :dry_run, :target_url, :output))
+    EvalOpsPrLensReview.write_github_outputs(
+      options[:github_output],
+      "candidate_count" => result.fetch("candidate_count"),
+      "dispatched_count" => result.fetch("dispatched_count"),
+      "skipped_count" => result.fetch("skipped_count")
+    )
+    puts "Found #{result.fetch("candidate_count")} EvalOpsBot review request(s); dispatched #{result.fetch("dispatched_count")}, skipped #{result.fetch("skipped_count")}."
   else
-    warn "usage: #{$PROGRAM_NAME} discover|post-status|run-lens|lens-status-description|meta-review"
+    warn "usage: #{$PROGRAM_NAME} discover|post-status|run-lens|lens-status-description|meta-review|dispatch-review-requests"
     exit 2
   end
 end

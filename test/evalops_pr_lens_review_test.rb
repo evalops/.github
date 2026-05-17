@@ -187,6 +187,83 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_equal "{\"body\":\"hello\"}", captured.fetch(:stdin_data)
   end
 
+  def test_normalize_search_pull_requests_dedupes_review_requests
+    rows = [
+      {
+        "repository" => { "nameWithOwner" => "evalops/deploy" },
+        "number" => 3511,
+        "title" => "Runtime rollout aliases",
+        "url" => "https://github.com/evalops/deploy/pull/3511",
+        "isDraft" => false,
+        "updatedAt" => "2026-05-17T22:46:41Z"
+      },
+      {
+        "repository" => { "nameWithOwner" => "evalops/deploy" },
+        "number" => 3511,
+        "title" => "Duplicate search row",
+        "url" => "https://github.com/evalops/deploy/pull/3511",
+        "isDraft" => false
+      }
+    ]
+
+    prs = EvalOpsPrLensReview.normalize_search_pull_requests(rows)
+
+    assert_equal 1, prs.length
+    assert_equal "evalops/deploy", prs.fetch(0).fetch("repo")
+    assert_equal "evalops-deploy", prs.fetch(0).fetch("repo_slug")
+    assert_equal 3511, prs.fetch(0).fetch("number")
+  end
+
+  def test_review_started_for_head_uses_meta_review_status_context
+    api = lambda do |*_args, **_kwargs|
+      {
+        "statuses" => [
+          { "context" => "evalops-pr-lens/migration-safety" },
+          { "context" => EvalOpsPrLensReview.meta_context }
+        ]
+      }
+    end
+
+    EvalOpsPrLensReview.stub(:gh_api_json, api) do
+      assert EvalOpsPrLensReview.review_started_for_head?(repo: "evalops/deploy", head_sha: "abc123")
+    end
+  end
+
+  def test_dispatch_requested_reviews_queues_and_marks_pending
+    candidate = {
+      "repo" => "evalops/deploy",
+      "repo_slug" => "evalops-deploy",
+      "number" => 3511,
+      "title" => "Runtime rollout aliases",
+      "url" => "https://github.com/evalops/deploy/pull/3511",
+      "draft" => false
+    }
+    dispatched = []
+    marked = []
+
+    EvalOpsPrLensReview.stub(:review_requested_prs, ->(**_kwargs) { [candidate] }) do
+      EvalOpsPrLensReview.stub(:pr_head_sha, ->(**_kwargs) { "abc123" }) do
+        EvalOpsPrLensReview.stub(:review_started_for_head?, ->(**_kwargs) { false }) do
+          EvalOpsPrLensReview.stub(:dispatch_review_requested, ->(**kwargs) { dispatched << kwargs }) do
+            EvalOpsPrLensReview.stub(:mark_review_queued, ->(**kwargs) { marked << kwargs }) do
+              result = EvalOpsPrLensReview.dispatch_requested_reviews(
+                owner: "evalops",
+                reviewer: "EvalOpsBot",
+                limit: 100,
+                dry_run: false,
+                target_url: "https://github.com/evalops/.github/actions/runs/1"
+              )
+
+              assert_equal 1, result.fetch("dispatched_count")
+              assert_equal [{ repo: "evalops/deploy", pr: 3511, requested_reviewer: "EvalOpsBot" }], dispatched
+              assert_equal "abc123", marked.fetch(0).fetch(:head_sha)
+            end
+          end
+        end
+      end
+    end
+  end
+
   def test_build_lens_prompt_includes_review_context
     pr_json = {
       "title" => "Risky workflow",
