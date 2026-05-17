@@ -3,6 +3,8 @@ name: EvalOps PR lens review
 on:
   schedule:
     - cron: "23 */2 * * *"
+  repository_dispatch:
+    types: [evalopsbot-review-requested]
   workflow_dispatch:
     inputs:
       target_repos:
@@ -34,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: evalops-pr-lens-review-${{ github.event_name == 'workflow_dispatch' && inputs.target_prs || 'all-open' }}
+  group: evalops-pr-lens-review-${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_prs || github.event.client_payload.target_pr) || github.event_name == 'workflow_dispatch' && inputs.target_prs || 'all-open' }}
   cancel-in-progress: false
 
 jobs:
@@ -47,8 +49,8 @@ jobs:
       pr_count: ${{ steps.discover.outputs.pr_count }}
     env:
       GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN || secrets.EVALOPS_ORG_READ_TOKEN }}
-      TARGET_REPOS: ${{ inputs.target_repos || 'evalops/platform,evalops/deploy,evalops/maestro-internal' }}
-      TARGET_PRS: ${{ inputs.target_prs || '' }}
+      TARGET_REPOS: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repos || github.event.client_payload.target_repo) || inputs.target_repos || 'evalops/platform,evalops/deploy,evalops/maestro-internal' }}
+      TARGET_PRS: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_prs || github.event.client_payload.target_pr) || inputs.target_prs || '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
@@ -96,9 +98,9 @@ jobs:
       REVIEW_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.EVALOPS_ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.EVALOPS_OPENAI_API_KEY }}
-      PR_LENS_PROVIDER: ${{ inputs.provider || 'anthropic' }}
-      PR_LENS_MODEL: ${{ inputs.model || 'claude-opus-4-7' }}
-      PR_LENS_MAX_DIFF_BYTES: ${{ inputs.max_diff_bytes || '180000' }}
+      PR_LENS_PROVIDER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.provider || inputs.provider || 'anthropic' }}
+      PR_LENS_MODEL: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.model || inputs.model || 'claude-opus-4-7' }}
+      PR_LENS_MAX_DIFF_BYTES: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.max_diff_bytes || inputs.max_diff_bytes || '180000' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Checkout org review helpers
@@ -237,7 +239,7 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
-      PR_LENS_MIN_CONFIDENCE: ${{ inputs.min_confidence || '0.82' }}
+      PR_LENS_MIN_CONFIDENCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.min_confidence || inputs.min_confidence || '0.82' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Checkout org review helpers
