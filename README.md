@@ -41,6 +41,20 @@ operational assumptions.
 
 ## Reusable Workflows
 
+### EvalOpsBot Review Requests
+
+Use `.github/workflows/evalopsbot-review-request-dispatch.yml` as the org-wide
+bridge from GitHub review requests to the deep PR lens workflow. Every five
+minutes it searches open EvalOps PRs with `review-requested:EvalOpsBot`, skips
+head SHAs that already have an `evalops-pr-lens/meta-review` status, marks new
+matches as pending, and dispatches `.github/workflows/evalops-pr-lens-review.yml`
+for that exact `repo#PR`.
+
+This keeps the request path inside GitHub Actions and existing review secrets
+instead of adding a standalone webhook relay. If lower latency becomes important,
+the same `evalopsbot-review-requested` `repository_dispatch` contract can be
+called by an org webhook relay.
+
 ### Codex Workflow Templates
 
 Use the workflow templates under `.github/workflow-templates/` to add Codex
