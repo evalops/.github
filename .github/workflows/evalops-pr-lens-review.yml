@@ -142,35 +142,29 @@ jobs:
             --description "Running ${{ matrix.lens }} lens review" \
             --target-url "${RUN_URL}"
 
-      - name: Checkout target pull request head
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          repository: ${{ matrix.repo }}
-          ref: refs/pull/${{ matrix.pr }}/head
-          token: ${{ env.REVIEW_TOKEN }}
-          fetch-depth: 0
-          path: target
-
-      - name: Fetch base and head refs
+      - name: Prepare target pull request head
         id: refs
         shell: bash
         env:
           TARGET_REPO: ${{ matrix.repo }}
           PR_NUMBER: ${{ matrix.pr }}
+          LENS: ${{ matrix.lens }}
+          SNAPSHOT_HEAD_SHA: ${{ matrix.head_sha }}
+          SNAPSHOT_BASE_SHA: ${{ matrix.base_sha }}
         run: |
           set -euo pipefail
-          pr_json="$(gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}")"
-          base_ref="$(jq -r '.base.ref' <<<"${pr_json}")"
-          base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
-          head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
-          git -C target fetch --no-tags origin "${base_ref}" "+refs/pull/${PR_NUMBER}/head"
-          {
-            echo "base_ref=${base_ref}"
-            echo "base_sha=${base_sha}"
-            echo "head_sha=${head_sha}"
-          } >> "${GITHUB_OUTPUT}"
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb prepare-workspace \
+            --repo "${TARGET_REPO}" \
+            --pr "${PR_NUMBER}" \
+            --lens "${LENS}" \
+            --workspace target \
+            --output lens-review.json \
+            --github-output "${GITHUB_OUTPUT}" \
+            --snapshot-head-sha "${SNAPSHOT_HEAD_SHA}" \
+            --snapshot-base-sha "${SNAPSHOT_BASE_SHA}"
 
       - name: Run lens reviewer
+        if: ${{ steps.refs.outputs.skip != 'true' }}
         shell: bash
         env:
           TARGET_REPO: ${{ matrix.repo }}
@@ -193,7 +187,7 @@ jobs:
             --max-diff-bytes "${PR_LENS_MAX_DIFF_BYTES}"
 
       - name: Complete lens status
-        if: ${{ success() }}
+        if: ${{ success() && steps.refs.outputs.skip != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -209,13 +203,30 @@ jobs:
             --description "${description}" \
             --target-url "${RUN_URL}"
 
+      - name: Complete skipped lens status
+        if: ${{ steps.refs.outputs.skip == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          description="$(
+            ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb \
+              lens-status-description --review-json lens-review.json
+          )"
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb post-status \
+            --repo "${{ matrix.repo }}" \
+            --sha "${{ steps.refs.outputs.head_sha || matrix.head_sha }}" \
+            --context "${{ matrix.check_context }}" \
+            --state success \
+            --description "${description}" \
+            --target-url "${RUN_URL}"
+
       - name: Mark lens errored
         if: ${{ failure() }}
         shell: bash
         run: |
           ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb post-status \
             --repo "${{ matrix.repo }}" \
-            --sha "${{ matrix.head_sha }}" \
+            --sha "${{ steps.refs.outputs.head_sha || matrix.head_sha }}" \
             --context "${{ matrix.check_context }}" \
             --state error \
             --description "${{ matrix.lens }} lens review failed" \

@@ -356,7 +356,10 @@ per-repository workflow copies. The relay should listen for GitHub
 - `repository.full_name` is an EvalOps repository
 - `pull_request.number` is present
 
-When those checks pass, dispatch this repository's review workflow:
+`.github/scripts/evalopsbot-webhook-relay.rb` is the checked-in relay core for
+that endpoint. It verifies `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET`
+is set, ignores non-matching deliveries, and dispatches this repository's
+review workflow:
 
 ```bash
 gh api --method POST repos/evalops/.github/dispatches --input - <<'JSON'
@@ -375,4 +378,6 @@ The workflow also accepts `target_prs`, `target_repos`, `provider`, `model`,
 `max_diff_bytes`, and `min_confidence` in `client_payload` for controlled
 operator overrides. Keep the relay token scoped to dispatching workflows in
 `evalops/.github`; the review workflow itself owns the cross-repo read/write
-token and model-provider credentials.
+token and model-provider credentials. The scheduled
+`evalopsbot-review-request-dispatch.yml` workflow remains as an hourly fallback
+for missed webhook deliveries, not the primary trigger path.

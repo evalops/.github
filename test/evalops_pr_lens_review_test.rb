@@ -2,6 +2,7 @@
 
 require "json"
 require "minitest/autorun"
+require "tmpdir"
 require_relative "../.github/scripts/evalops-pr-lens-review"
 
 class EvalOpsPrLensReviewTest < Minitest::Test
@@ -47,6 +48,46 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_equal 1, matrix.length
     assert_equal "evalops-pr-lens/migration-safety", matrix.fetch(0).fetch("check_context")
     assert_equal "abc123", matrix.fetch(0).fetch("head_sha")
+  end
+
+  def test_matrix_for_uses_classified_lenses
+    prs = [
+      {
+        "repo" => "evalops/deploy",
+        "repo_slug" => "evalops-deploy",
+        "number" => 10,
+        "head_sha" => "head",
+        "base_sha" => "base",
+        "base_ref" => "main",
+        "head_ref" => "branch",
+        "lenses" => %w[iam-blast-radius argo-manifest-skew]
+      }
+    ]
+
+    matrix = EvalOpsPrLensReview.matrix_for(prs)
+
+    assert_equal %w[iam-blast-radius argo-manifest-skew], matrix.map { |row| row.fetch("lens") }
+    assert_equal ["base"], matrix.map { |row| row.fetch("base_sha") }.uniq
+  end
+
+  def test_lenses_for_paths_selects_targeted_review_lenses
+    lenses = EvalOpsPrLensReview.lenses_for_paths(
+      [
+        ".github/workflows/release.yml",
+        "clusters/prod/kustomization.yaml",
+        "proto/platform/v1/service.proto"
+      ]
+    )
+
+    assert_includes lenses, "iam-blast-radius"
+    assert_includes lenses, "argo-manifest-skew"
+    assert_includes lenses, "nats-contract-drift"
+    assert_includes lenses, "generated-sdk-delta"
+    refute_includes lenses, "eval-regression-risk"
+  end
+
+  def test_lenses_for_paths_skips_docs_only_prs
+    assert_empty EvalOpsPrLensReview.lenses_for_paths(["README.md", "docs/runbook.md"])
   end
 
   def test_normalize_lens_review_drops_invalid_findings
@@ -299,9 +340,95 @@ class EvalOpsPrLensReviewTest < Minitest::Test
   def test_lens_workflow_checks_out_pull_request_head_ref
     workflow = File.read(File.expand_path("../.github/workflows/evalops-pr-lens-review.yml", __dir__))
 
-    assert_includes workflow, "Checkout target pull request head"
-    assert_includes workflow, 'ref: refs/pull/${{ matrix.pr }}/head'
+    assert_includes workflow, "Prepare target pull request head"
+    assert_includes workflow, "prepare-workspace"
     refute_includes workflow, 'ref: refs/pull/${{ matrix.pr }}/merge'
+  end
+
+  def test_prepare_workspace_writes_skipped_review_when_head_changes
+    Dir.mktmpdir do |dir|
+      output = File.join(dir, "lens-review.json")
+      github_output = File.join(dir, "github-output")
+      pr_json = {
+        "state" => "open",
+        "head" => { "sha" => "new-head" },
+        "base" => { "sha" => "base", "ref" => "main" }
+      }
+
+      EvalOpsPrLensReview.stub(:pr_metadata, ->(**_kwargs) { pr_json }) do
+        result = EvalOpsPrLensReview.prepare_workspace(
+          repo: "evalops/deploy",
+          pr: 10,
+          lens: "iam-blast-radius",
+          workspace: File.join(dir, "target"),
+          output: output,
+          github_output: github_output,
+          snapshot_head_sha: "old-head",
+          snapshot_base_sha: "base",
+          token: nil
+        )
+
+        review = JSON.parse(File.read(output))
+        assert_equal true, result.fetch("skip")
+        assert_equal "skipped", review.fetch("status")
+        assert_equal "pull request head changed since discovery", review.fetch("skip_reason")
+        assert_includes File.read(github_output), "skip=true"
+      end
+    end
+  end
+
+  def test_meta_review_marks_incomplete_coverage_when_expected_lens_artifact_is_missing
+    Dir.mktmpdir do |dir|
+      discovery_dir = File.join(dir, "pr-lens-discovery")
+      review_dir = File.join(dir, "pr-lens-evalops-deploy-10-iam-blast-radius")
+      FileUtils.mkdir_p(discovery_dir)
+      FileUtils.mkdir_p(review_dir)
+      File.write(
+        File.join(discovery_dir, "pr-lens-targets.json"),
+        JSON.pretty_generate(
+          [
+            {
+              "repo" => "evalops/deploy",
+              "number" => 10,
+              "head_sha" => "head",
+              "lenses" => %w[iam-blast-radius argo-manifest-skew]
+            }
+          ]
+        )
+      )
+      File.write(
+        File.join(review_dir, "lens-review.json"),
+        JSON.pretty_generate(
+          {
+            "schema_version" => 1,
+            "repo" => "evalops/deploy",
+            "pr" => 10,
+            "lens" => "iam-blast-radius",
+            "check_id" => "evalops-pr-lens/iam-blast-radius",
+            "head_sha" => "head",
+            "findings" => []
+          }
+        )
+      )
+      statuses = []
+
+      EvalOpsPrLensReview.stub(:run_url, "https://github.com/evalops/.github/actions/runs/1") do
+        EvalOpsPrLensReview.stub(:delete_marker_comments, ->(**_kwargs) {}) do
+          EvalOpsPrLensReview.stub(:post_status, ->(**kwargs) { statuses << kwargs }) do
+            result = EvalOpsPrLensReview.meta_review(
+              artifact_root: dir,
+              min_confidence: 0.82,
+              output: File.join(dir, "meta-review.json")
+            )
+
+            assert_equal 2, result.fetch("expected_reviews")
+            assert_equal 1, result.fetch("coverage").fetch(0).fetch("missing")
+            assert_equal "error", statuses.fetch(0).fetch(:state)
+            assert_includes statuses.fetch(0).fetch(:description), "coverage incomplete"
+          end
+        end
+      end
+    end
   end
 
   def test_migration_safety_lens_covers_stateful_infra_rollouts

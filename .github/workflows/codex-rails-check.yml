@@ -9,6 +9,7 @@ on:
       - "README.md"
       - ".agents/skills/**"
       - ".github/agent-mcp/**"
+      - ".github/actionlint.yaml"
       - ".github/codex/hooks/**"
       - ".github/codex/schemas/**"
       - ".github/contracts/**"
@@ -66,6 +67,22 @@ jobs:
             exit 0
           fi
           ruby -e 'require "yaml"; ARGV.each { |f| YAML.load_file(f); puts "ok #{f}" }' "${files[@]}"
+
+      - name: Lint workflow semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/workflows/*.yml .github/workflows/*.yaml .github/workflow-templates/*.yml .github/workflow-templates/*.yaml)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No workflow YAML files found."
+            exit 0
+          fi
+          if command -v actionlint >/dev/null 2>&1; then
+            actionlint "${files[@]}"
+          else
+            go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 "${files[@]}"
+          fi
 
       - name: Validate workflow template metadata
         shell: bash
