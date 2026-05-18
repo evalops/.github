@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "base64"
+require "fileutils"
 require "json"
 require "net/http"
 require "open3"
@@ -73,6 +75,48 @@ module EvalOpsPrLensReview
     }
   }.freeze
 
+  LENS_PATH_RULES = {
+    "migration-safety" => [
+      %r{\A(db|database|migrations?)/}i,
+      %r{migrations?/}i,
+      %r{\.(sql|tf)\z}i,
+      %r{\A(infrastructure|terraform|helm|charts|k8s|clusters)/}i,
+      %r{(disk|cache|state|cleanup|backfill|bootstrap|startup)}i
+    ],
+    "nats-contract-drift" => [
+      %r{(^|/)(nats|jetstream|streams?|consumers?|subjects?)(/|\.)}i,
+      %r{(^|/)(proto|protos|protobuf|schemas?)/}i,
+      %r{\.(proto|avsc)\z}i,
+      %r{(cloudevents?|event[-_ ]?catalog|publisher|subscriber)}i
+    ],
+    "argo-manifest-skew" => [
+      %r{\A(argocd|argo|clusters|k8s|kubernetes|overlays|base|helm|charts)/}i,
+      %r{(^|/)(kustomization|values)\.ya?ml\z}i,
+      %r{(^|/)applications?/}i,
+      %r{(^|/)(deployment|service|configmap|secret|externalsecret|namespace|ingress)\.ya?ml\z}i
+    ],
+    "iam-blast-radius" => [
+      %r{\A\.github/workflows/}i,
+      %r{(^|/)(iam|rbac|serviceaccount|service-account|policy|permissions?)(/|\.)}i,
+      %r{(^|/)(secrets?|external-secrets?|vault|oidc)(/|\.)}i,
+      %r{\.(tf|tfvars)\z}i,
+      %r{(token|credential|workload[-_ ]?identity|rolebinding|clusterrole)}i
+    ],
+    "generated-sdk-delta" => [
+      %r{(^|/)(gen|generated|sdk|openapi|swagger|proto|protos|protobuf|schemas?)/}i,
+      %r{\.(proto|openapi\.ya?ml|swagger\.json|schema\.json)\z}i,
+      %r{(^|/)(package\.json|pyproject\.toml|go\.mod|buf\.yaml|buf\.gen\.yaml)\z}i,
+      %r{(^|/)(CHANGELOG|release-please-config|\.release-please-manifest)}i
+    ],
+    "eval-regression-risk" => [
+      %r{(^|/)(evals?|evaluations?|fixtures?|datasets?|goldens?|scenarios?|judges?|prompts?)/}i,
+      %r{(^|/)(prompt|judge|rubric|score|scoring|golden|fixture)}i,
+      %r{(^|/)testdata/}i
+    ]
+  }.freeze
+
+  DOC_ONLY_PATH = %r{\A(README|SECURITY|CONTRIBUTING|CHANGELOG|docs/|profile/|.*\.(md|mdx|txt))}i
+
   MARKER = "<!-- evalops-pr-lens-review -->"
   REVIEW_REQUESTED_DISPATCH_EVENT = "evalopsbot-review-requested"
   REVIEW_REQUESTED_DISPATCH_SOURCE = "evalopsbot-review-request-dispatch"
@@ -124,6 +168,28 @@ module EvalOpsPrLensReview
     return lens if LENSES.key?(lens)
 
     raise ArgumentError, "unknown lens #{lens.inspect}; expected one of #{LENSES.keys.join(", ")}"
+  end
+
+  def lens_reason_for_path(path)
+    LENS_PATH_RULES.each do |lens, patterns|
+      return lens if patterns.any? { |pattern| path.match?(pattern) }
+    end
+    nil
+  end
+
+  def lenses_for_paths(paths)
+    normalized = paths.map(&:to_s).map(&:strip).reject(&:empty?)
+    return LENSES.keys if normalized.empty?
+
+    lenses = normalized.flat_map do |path|
+      LENS_PATH_RULES.each_with_object([]) do |(lens, patterns), matches|
+        matches << lens if patterns.any? { |pattern| path.match?(pattern) }
+      end
+    end.uniq
+    return lenses if lenses.any?
+    return [] if normalized.all? { |path| path.match?(DOC_ONLY_PATH) }
+
+    ["eval-regression-risk"]
   end
 
   def gh_api(*args, input: nil, token: ENV["GH_TOKEN"])
@@ -267,12 +333,19 @@ module EvalOpsPrLensReview
     summary
   end
 
+  def pr_files_metadata(repo:, pr:)
+    gh_api_json("repos/#{repo}/pulls/#{pr}/files?per_page=100")
+  end
+
   def discover_open_prs(repos:, pr_filter: nil)
     repos.flat_map do |repo|
       normalized_repo = normalize_repo(repo)
       prs = gh_api_json("repos/#{normalized_repo}/pulls?state=open&per_page=100")
       prs.select! { |pr| pr_filter.fetch(normalized_repo, []).include?(Integer(pr.fetch("number"))) } if pr_filter
       prs.map do |pr|
+        files = pr_files_metadata(repo: normalized_repo, pr: Integer(pr.fetch("number")))
+        filenames = files.map { |file| file.fetch("filename") }
+        lenses = lenses_for_paths(filenames)
         {
           "repo" => normalized_repo,
           "repo_slug" => normalized_repo.tr("/", "-"),
@@ -283,7 +356,9 @@ module EvalOpsPrLensReview
           "head_sha" => pr.fetch("head").fetch("sha"),
           "base_sha" => pr.fetch("base").fetch("sha"),
           "base_ref" => pr.fetch("base").fetch("ref"),
-          "head_ref" => pr.fetch("head").fetch("ref")
+          "head_ref" => pr.fetch("head").fetch("ref"),
+          "changed_files" => filenames,
+          "lenses" => lenses
         }
       end
     end
@@ -291,7 +366,8 @@ module EvalOpsPrLensReview
 
   def matrix_for(prs, lenses: LENSES.keys)
     prs.flat_map do |pr|
-      lenses.map do |lens|
+      pr_lenses = pr.fetch("lenses", lenses)
+      pr_lenses.map do |lens|
         valid_lens!(lens)
         {
           "repo" => pr.fetch("repo"),
@@ -299,7 +375,10 @@ module EvalOpsPrLensReview
           "pr" => pr.fetch("number"),
           "lens" => lens,
           "check_context" => check_context(lens),
-          "head_sha" => pr.fetch("head_sha")
+          "head_sha" => pr.fetch("head_sha"),
+          "base_sha" => pr.fetch("base_sha", nil),
+          "base_ref" => pr.fetch("base_ref", nil),
+          "head_ref" => pr.fetch("head_ref", nil)
         }
       end
     end
@@ -326,11 +405,130 @@ module EvalOpsPrLensReview
     gh_api("--method", "POST", "repos/#{repo}/statuses/#{sha}", *fields)
   end
 
+  def write_json(path, payload)
+    File.write(path, JSON.pretty_generate(payload))
+    payload
+  end
+
+  def skipped_lens_review(repo:, pr:, lens:, head_sha:, reason:, output:)
+    write_json(
+      output,
+      {
+        "schema_version" => 1,
+        "repo" => repo,
+        "pr" => Integer(pr),
+        "lens" => lens,
+        "check_id" => check_context(lens),
+        "head_sha" => head_sha.to_s,
+        "generated_at" => Time.now.utc.iso8601,
+        "status" => "skipped",
+        "skip_reason" => reason,
+        "summary" => "Skipped #{lens} lens review: #{reason}",
+        "confidence_score" => 0.0,
+        "findings" => []
+      }
+    )
+  end
+
+  def write_prepare_outputs(path, outputs)
+    write_github_outputs(path, outputs)
+  end
+
+  def git_authorization_header(token)
+    return nil if token.to_s.empty?
+
+    "AUTHORIZATION: basic #{Base64.strict_encode64("x-access-token:#{token}")}"
+  end
+
+  def git_capture_auth(workspace, *args, token: nil)
+    env = { "GIT_TERMINAL_PROMPT" => "0" }
+    command = ["git"]
+    command += ["-C", workspace] if workspace
+    header = git_authorization_header(token)
+    command += ["-c", "http.https://github.com/.extraheader=#{header}"] if header
+    command += args
+
+    stdout, stderr, status = Open3.capture3(env, *command)
+    raise "git #{args.join(" ")} failed: #{stderr.empty? ? stdout : stderr}" unless status.success?
+
+    stdout
+  end
+
   def git_capture(workspace, *args)
     stdout, stderr, status = Open3.capture3("git", "-C", workspace, *args)
     raise "git #{args.join(" ")} failed: #{stderr}" unless status.success?
 
     stdout
+  end
+
+  def prepare_workspace(repo:, pr:, lens:, workspace:, output:, github_output:, snapshot_head_sha:, snapshot_base_sha:, token:)
+    head_sha = snapshot_head_sha.to_s
+    begin
+      pr_json = pr_metadata(repo: repo, pr: pr)
+      current_state = pr_json.fetch("state", "").downcase
+      current_head_sha = pr_json.fetch("head").fetch("sha")
+      current_base_sha = pr_json.fetch("base").fetch("sha")
+      base_ref = pr_json.fetch("base").fetch("ref")
+      reason = nil
+
+      if current_state != "open"
+        reason = "pull request is #{current_state.empty? ? "not open" : current_state}"
+      elsif !snapshot_head_sha.to_s.empty? && current_head_sha != snapshot_head_sha
+        reason = "pull request head changed since discovery"
+      elsif !snapshot_base_sha.to_s.empty? && current_base_sha != snapshot_base_sha
+        reason = "pull request base changed since discovery"
+      end
+
+      if reason
+        skipped_lens_review(repo: repo, pr: pr, lens: lens, head_sha: head_sha.empty? ? current_head_sha : head_sha, reason: reason, output: output)
+        write_prepare_outputs(
+          github_output,
+          "skip" => "true",
+          "skip_reason" => reason,
+          "head_sha" => head_sha.empty? ? current_head_sha : head_sha,
+          "base_sha" => snapshot_base_sha.to_s.empty? ? current_base_sha : snapshot_base_sha
+        )
+        return { "skip" => true, "reason" => reason }
+      end
+
+      FileUtils.rm_rf(workspace)
+      FileUtils.mkdir_p(workspace)
+      git_capture_auth(nil, "init", workspace, token: token)
+      git_capture_auth(workspace, "remote", "add", "origin", "https://github.com/#{repo}.git", token: token)
+      git_capture_auth(workspace, "fetch", "--no-tags", "origin", base_ref, "+refs/pull/#{pr}/head:refs/remotes/pull/#{pr}/head", token: token)
+      git_capture_auth(workspace, "checkout", "--detach", current_head_sha, token: token)
+
+      checked_out = git_capture_auth(workspace, "rev-parse", "HEAD", token: token).strip
+      if checked_out != current_head_sha
+        raise "checked out #{checked_out}, expected #{current_head_sha}"
+      end
+
+      write_prepare_outputs(
+        github_output,
+        "skip" => "false",
+        "skip_reason" => "",
+        "base_ref" => base_ref,
+        "base_sha" => current_base_sha,
+        "head_sha" => current_head_sha
+      )
+      {
+        "skip" => false,
+        "base_ref" => base_ref,
+        "base_sha" => current_base_sha,
+        "head_sha" => current_head_sha
+      }
+    rescue StandardError => e
+      reason = "target ref unavailable: #{e.message.lines.first.to_s.strip}"
+      skipped_lens_review(repo: repo, pr: pr, lens: lens, head_sha: head_sha, reason: reason, output: output)
+      write_prepare_outputs(
+        github_output,
+        "skip" => "true",
+        "skip_reason" => reason,
+        "head_sha" => head_sha,
+        "base_sha" => snapshot_base_sha.to_s
+      )
+      { "skip" => true, "reason" => reason }
+    end
   end
 
   def truncated(text, max_bytes)
@@ -669,6 +867,11 @@ module EvalOpsPrLensReview
   end
 
   def lens_status_description(review)
+    if review.fetch("status", "") == "skipped"
+      reason = review.fetch("skip_reason", "not applicable")
+      return "Skipped: #{reason}"
+    end
+
     findings = review.fetch("findings", [])
     confidence = findings.map { |finding| finding.fetch("confidence_score") }.max || 0.0
     "#{findings.length} finding#{findings.length == 1 ? "" : "s"}; top confidence #{format("%.2f", confidence)}"
@@ -677,6 +880,23 @@ module EvalOpsPrLensReview
   def read_lens_reviews(root)
     Dir.glob(File.join(root, "**", "lens-review.json")).sort.map do |path|
       JSON.parse(File.read(path)).merge("_artifact_path" => path)
+    end
+  end
+
+  def read_expected_reviews(root)
+    Dir.glob(File.join(root, "**", "pr-lens-targets.json")).sort.flat_map do |path|
+      JSON.parse(File.read(path)).flat_map do |pr|
+        Array(pr.fetch("lenses", [])).map do |lens|
+          {
+            "repo" => pr.fetch("repo"),
+            "pr" => Integer(pr.fetch("number")),
+            "lens" => lens,
+            "head_sha" => pr.fetch("head_sha"),
+            "check_id" => check_context(lens),
+            "_artifact_path" => path
+          }
+        end
+      end
     end
   end
 
@@ -798,12 +1018,18 @@ module EvalOpsPrLensReview
     end
   end
 
-  def meta_state(findings)
+  def meta_state(findings, coverage_incomplete: false)
+    return "error" if coverage_incomplete
+
     findings.any? { |finding| finding.fetch("priority") <= 1 } ? "failure" : "success"
   end
 
-  def meta_description(findings)
-    if findings.empty?
+  def meta_description(findings, missing_count: 0, skipped_count: 0)
+    if missing_count.positive?
+      "PR lens coverage incomplete: #{missing_count} missing"
+    elsif findings.empty? && skipped_count.positive?
+      "No findings; #{skipped_count} lens review#{skipped_count == 1 ? "" : "s"} skipped"
+    elsif findings.empty?
       "No high-confidence PR lens findings"
     else
       "#{findings.length} high-confidence finding#{findings.length == 1 ? "" : "s"}"
@@ -812,12 +1038,41 @@ module EvalOpsPrLensReview
 
   def meta_review(artifact_root:, min_confidence:, output:)
     reviews = read_lens_reviews(artifact_root)
+    expected_reviews = read_expected_reviews(artifact_root)
+    reviews_by_key = reviews.each_with_object({}) do |review, hash|
+      hash[[review.fetch("repo"), Integer(review.fetch("pr")), review.fetch("lens"), review.fetch("head_sha")]] = review
+    end
     ranked = dedupe_and_rank(high_confidence_findings(reviews, min_confidence: min_confidence))
     grouped = grouped_by_pr(ranked)
     target_url = run_url
+    coverage_by_pr = {}
 
-    reviews.group_by { |review| [review.fetch("repo"), review.fetch("pr"), review.fetch("head_sha")] }.each_key do |repo, pr, head_sha|
+    expected_reviews.group_by { |review| [review.fetch("repo"), review.fetch("pr"), review.fetch("head_sha")] }.each do |key, rows|
+      coverage_by_pr[key] = {
+        "expected" => rows.length,
+        "missing" => rows.count do |row|
+          !reviews_by_key.key?([row.fetch("repo"), row.fetch("pr"), row.fetch("lens"), row.fetch("head_sha")])
+        end,
+        "skipped" => rows.count do |row|
+          review = reviews_by_key[[row.fetch("repo"), row.fetch("pr"), row.fetch("lens"), row.fetch("head_sha")]]
+          review && review.fetch("status", "") == "skipped"
+        end,
+        "lenses" => rows.map { |row| row.fetch("lens") }.sort
+      }
+    end
+
+    review_keys = reviews.group_by { |review| [review.fetch("repo"), review.fetch("pr"), review.fetch("head_sha")] }.keys
+    (coverage_by_pr.keys + review_keys).uniq.each do |repo, pr, head_sha|
       findings = grouped.fetch([repo, pr, head_sha], [])
+      coverage = coverage_by_pr.fetch(
+        [repo, pr, head_sha],
+        {
+          "expected" => reviews.count { |review| review.fetch("repo") == repo && review.fetch("pr") == pr && review.fetch("head_sha") == head_sha },
+          "missing" => 0,
+          "skipped" => 0,
+          "lenses" => reviews.select { |review| review.fetch("repo") == repo && review.fetch("pr") == pr && review.fetch("head_sha") == head_sha }.map { |review| review.fetch("lens") }.sort
+        }
+      )
       if findings.empty?
         delete_marker_comments(repo: repo, pr: pr)
       else
@@ -831,8 +1086,12 @@ module EvalOpsPrLensReview
         repo: repo,
         sha: head_sha,
         context: meta_context,
-        state: meta_state(findings),
-        description: meta_description(findings),
+        state: meta_state(findings, coverage_incomplete: coverage.fetch("missing").positive?),
+        description: meta_description(
+          findings,
+          missing_count: coverage.fetch("missing"),
+          skipped_count: coverage.fetch("skipped")
+        ),
         target_url: target_url
       )
     end
@@ -842,6 +1101,10 @@ module EvalOpsPrLensReview
       "generated_at" => Time.now.utc.iso8601,
       "min_confidence" => min_confidence,
       "reviews" => reviews.length,
+      "expected_reviews" => expected_reviews.length,
+      "coverage" => coverage_by_pr.map do |(repo, pr, head_sha), coverage|
+        coverage.merge("repo" => repo, "pr" => pr, "head_sha" => head_sha)
+      end,
       "published_findings" => ranked,
       "run_url" => target_url
     }
@@ -892,6 +1155,30 @@ if $PROGRAM_NAME == __FILE__
       parser.on("--target-url URL") { |value| options[:target_url] = value }
     end.parse!
     EvalOpsPrLensReview.post_status(**options)
+  when "prepare-workspace"
+    options = {
+      token: ENV["REVIEW_TOKEN"] || ENV["GH_TOKEN"],
+      github_output: ENV["GITHUB_OUTPUT"],
+      snapshot_head_sha: "",
+      snapshot_base_sha: ""
+    }
+    OptionParser.new do |parser|
+      parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+      parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
+      parser.on("--lens LENS") { |value| options[:lens] = value }
+      parser.on("--workspace PATH") { |value| options[:workspace] = value }
+      parser.on("--output PATH") { |value| options[:output] = value }
+      parser.on("--github-output PATH") { |value| options[:github_output] = value }
+      parser.on("--snapshot-head-sha SHA") { |value| options[:snapshot_head_sha] = value }
+      parser.on("--snapshot-base-sha SHA") { |value| options[:snapshot_base_sha] = value }
+      parser.on("--token TOKEN") { |value| options[:token] = value }
+    end.parse!
+    required = %i[repo pr lens workspace output]
+    missing = required.select { |key| options[key].nil? || options[key].to_s.empty? }
+    raise OptionParser::MissingArgument, missing.join(", ") unless missing.empty?
+
+    result = EvalOpsPrLensReview.prepare_workspace(**options)
+    puts(result.fetch("skip") ? "Skipped #{options.fetch(:lens)}: #{result.fetch("reason")}" : "Prepared #{options.fetch(:repo)}##{options.fetch(:pr)}")
   when "run-lens"
     options = {
       provider: ENV.fetch("PR_LENS_PROVIDER", "anthropic"),
@@ -964,7 +1251,7 @@ if $PROGRAM_NAME == __FILE__
     )
     puts "Found #{result.fetch("candidate_count")} EvalOpsBot review request(s); dispatched #{result.fetch("dispatched_count")}, skipped #{result.fetch("skipped_count")}."
   else
-    warn "usage: #{$PROGRAM_NAME} discover|post-status|run-lens|lens-status-description|meta-review|dispatch-review-requests"
+    warn "usage: #{$PROGRAM_NAME} discover|post-status|prepare-workspace|run-lens|lens-status-description|meta-review|dispatch-review-requests"
     exit 2
   end
 end
