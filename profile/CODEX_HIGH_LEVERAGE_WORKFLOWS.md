@@ -10,7 +10,7 @@ Use `.github/workflow-templates/codex-structured-pr-review.yml` for repositories
 where inline review comments are more useful than one summary comment. The
 workflow:
 
-- checks out the PR merge ref and fetches base/head SHAs
+- checks out the PR head ref and fetches base/head SHAs
 - builds a prompt with the changed-file list and unified diff
 - runs Codex with `.github/codex/schemas/pr-review.schema.json`
 - posts schema-backed findings as GitHub inline review comments
