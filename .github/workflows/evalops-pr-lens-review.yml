@@ -142,11 +142,11 @@ jobs:
             --description "Running ${{ matrix.lens }} lens review" \
             --target-url "${RUN_URL}"
 
-      - name: Checkout target pull request
+      - name: Checkout target pull request head
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: ${{ matrix.repo }}
-          ref: refs/pull/${{ matrix.pr }}/merge
+          ref: refs/pull/${{ matrix.pr }}/head
           token: ${{ env.REVIEW_TOKEN }}
           fetch-depth: 0
           path: target

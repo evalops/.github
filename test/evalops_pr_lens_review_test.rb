@@ -296,6 +296,14 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_includes prompt, "Existing bot or human review comments are evidence"
   end
 
+  def test_lens_workflow_checks_out_pull_request_head_ref
+    workflow = File.read(File.expand_path("../.github/workflows/evalops-pr-lens-review.yml", __dir__))
+
+    assert_includes workflow, "Checkout target pull request head"
+    assert_includes workflow, 'ref: refs/pull/${{ matrix.pr }}/head'
+    refute_includes workflow, 'ref: refs/pull/${{ matrix.pr }}/merge'
+  end
+
   def test_migration_safety_lens_covers_stateful_infra_rollouts
     pr_json = {
       "title" => "Buildfarm disk headroom",
