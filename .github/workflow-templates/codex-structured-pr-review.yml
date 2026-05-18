@@ -139,3 +139,4 @@ jobs:
             codex-structured-review-prompt.md
             codex-structured-review.json
           if-no-files-found: ignore
+          retention-days: 7

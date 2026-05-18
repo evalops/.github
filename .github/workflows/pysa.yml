@@ -128,3 +128,4 @@ jobs:
             ${{ inputs.working_directory }}/pysa-output.txt
             ${{ inputs.working_directory }}/pysa-results/**
           if-no-files-found: ignore
+          retention-days: 7
