@@ -24,6 +24,21 @@ The first rule should be boring: protect default branches from deletion and
 non-fast-forward updates, require PRs for critical repos, and only add required
 status checks after their workflows are present.
 
+Current evaluate-mode required-check policy:
+
+- `evalops/.github`: `validate`
+- `evalops/platform`: `validate`, `security-grep`, `semgrep`,
+  `event-types-check`, `migrations-check`, `repository-consolidation-check`,
+  `service-naming-check`
+- `evalops/cerebro`: `script-checks`, `test`, `visual-agent-loop-smoke`,
+  `unresolved-review-threads / unresolved-review-threads`
+- `evalops/chat`: `Go Backend`, `Frontend`, `Lint & Format`,
+  `validate / validate`, `build-and-publish`,
+  `unresolved-review-threads / unresolved-review-threads`
+
+These rulesets intentionally run in `evaluate` first. Promote an individual
+repo to active enforcement only after normal PRs show stable signal.
+
 ## Backlog Lifecycle
 
 Generated issues are operational data, not a parking lot. Every generated
@@ -57,6 +72,10 @@ Each active train record should include:
 
 Automation should update the existing train record when possible instead of
 opening repeated hold PRs with the same intent.
+
+For production, `evalops/deploy#1344` is the active release-train dashboard.
+High image-sync PR volume is an audit signal only when it is not tied back to
+that state record.
 
 ## Agent Review
 

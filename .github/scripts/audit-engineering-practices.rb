@@ -190,13 +190,58 @@ module EvalOpsEngineeringPracticesAudit
       []
     )
     Array(payload).map do |ruleset|
+      detail = run_gh(
+        ["api", "-X", "GET", "/orgs/#{owner}/rulesets/#{ruleset["id"]}"],
+        runner,
+        warnings,
+        ruleset
+      )
+      {
+        "id" => detail["id"],
+        "name" => detail["name"],
+        "target" => detail["target"],
+        "enforcement" => detail["enforcement"],
+        "conditions" => detail["conditions"] || {},
+        "rules" => Array(detail["rules"]).map do |rule|
+          {
+            "type" => rule["type"],
+            "required_status_checks" => Array(rule.dig("parameters", "required_status_checks")).map do |check|
+              check["context"]
+            end.compact.sort
+          }
+        end
+      }
+    end
+  end
+
+  def ruleset_applies_to_repo?(ruleset, repo)
+    return false unless ruleset["target"] == "branch"
+
+    repo_name = repo.split("/").last
+    condition = ruleset.dig("conditions", "repository_name") || {}
+    includes = Array(condition["include"])
+    excludes = Array(condition["exclude"])
+    included = includes.empty? || includes.include?("~ALL") || includes.include?(repo_name)
+    included && !excludes.include?(repo_name)
+  end
+
+  def ruleset_required_status_policy(repo, rulesets)
+    applicable = Array(rulesets).select { |ruleset| ruleset_applies_to_repo?(ruleset, repo) }
+    rules = applicable.map do |ruleset|
+      checks = Array(ruleset["rules"]).flat_map { |rule| Array(rule["required_status_checks"]) }.uniq.sort
+      next if checks.empty?
+
       {
         "id" => ruleset["id"],
         "name" => ruleset["name"],
-        "target" => ruleset["target"],
-        "enforcement" => ruleset["enforcement"]
+        "enforcement" => ruleset["enforcement"],
+        "required_status_checks" => checks
       }
-    end
+    end.compact
+    {
+      "ruleset_required_status_checks" => rules.flat_map { |rule| rule["required_status_checks"] }.uniq.sort,
+      "ruleset_required_status_check_rulesets" => rules
+    }
   end
 
   def branch_protection(repo, runner, warnings)
@@ -257,26 +302,69 @@ module EvalOpsEngineeringPracticesAudit
       alerts = parsed if parsed.is_a?(Array)
     end
     alerts = Array(alerts)
+    critical_high = alerts.select do |alert|
+      %w[critical high].include?(alert.dig("security_vulnerability", "severity").to_s)
+    end
     {
       "total" => alerts.length,
       "by_severity" => alerts.group_by { |alert| alert.dig("security_vulnerability", "severity").to_s }.transform_values(&:length),
-      "by_repo" => alerts.group_by { |alert| alert.dig("repository", "full_name").to_s }.transform_values(&:length)
+      "by_repo" => alerts.group_by { |alert| alert.dig("repository", "full_name").to_s }.transform_values(&:length),
+      "critical_high_by_repo" => critical_high.group_by { |alert| alert.dig("repository", "full_name").to_s }.sort.to_h do |repo, repo_alerts|
+        packages = repo_alerts.group_by do |alert|
+          [
+            alert.dig("security_vulnerability", "severity").to_s,
+            alert.dig("dependency", "package", "ecosystem").to_s,
+            alert.dig("dependency", "package", "name").to_s
+          ]
+        end.map do |(severity, ecosystem, name), package_alerts|
+          {
+            "severity" => severity,
+            "ecosystem" => ecosystem,
+            "package" => name,
+            "count" => package_alerts.length,
+            "advisories" => package_alerts.map do |alert|
+              alert.dig("security_advisory", "cve_id") || alert.dig("security_advisory", "ghsa_id")
+            end.compact.uniq.sort
+          }
+        end.sort_by { |item| [item["severity"] == "critical" ? 0 : 1, item["ecosystem"], item["package"]] }
+        [
+          repo,
+          {
+            "total" => repo_alerts.length,
+            "by_severity" => repo_alerts.group_by { |alert| alert.dig("security_vulnerability", "severity").to_s }.transform_values(&:length),
+            "packages" => packages
+          }
+        ]
+      end
     }
   end
 
-  def alert_count(owner, kind, runner, warnings)
+  def secret_scanning_alerts(owner, runner, warnings)
     stdout, stderr, success = runner.call(
-      ["api", "--paginate", "-X", "GET", "/orgs/#{owner}/#{kind}/alerts", "-f", "state=open", "-f", "per_page=100", "--jq", ".[]"]
+      ["api", "--paginate", "-X", "GET", "/orgs/#{owner}/secret-scanning/alerts", "-f", "state=open", "-f", "per_page=100", "--jq", ".[]"]
     )
     unless success
-      warnings << "#{kind} alert fetch failed: #{stderr.to_s.strip}"
-      return 0
+      warnings << "secret-scanning alert fetch failed: #{stderr.to_s.strip}"
+      return { "total" => 0, "by_repo" => {} }
     end
-    lines = stdout.lines.reject { |line| line.strip.empty? }
-    return lines.length if lines.all? { |line| parse_json(line).is_a?(Hash) }
+    alerts = stdout.lines.map { |line| parse_json(line) }.compact
+    if alerts.empty?
+      parsed = parse_json(stdout)
+      alerts = parsed if parsed.is_a?(Array)
+    end
+    alerts = Array(alerts)
 
-    parsed = parse_json(stdout)
-    parsed.is_a?(Array) ? parsed.length : 0
+    {
+      "total" => alerts.length,
+      "by_repo" => alerts.group_by { |alert| alert.dig("repository", "full_name").to_s }.sort.to_h do |repo, repo_alerts|
+        [
+          repo,
+          repo_alerts.group_by { |alert| alert["secret_type_display_name"].to_s.empty? ? alert["secret_type"].to_s : alert["secret_type_display_name"].to_s }
+            .transform_values(&:length)
+            .sort.to_h
+        ]
+      end
+    }
   end
 
   def issue_list(repo, runner, warnings)
@@ -310,6 +398,30 @@ module EvalOpsEngineeringPracticesAudit
     }
   end
 
+  def release_train_state(config, runner, warnings)
+    repo = config["dashboard_repo"].to_s
+    issue = config["dashboard_issue"].to_s
+    marker = config["marker"].to_s
+    return { "dashboard_present" => false } if repo.empty? || issue.empty?
+
+    payload = run_gh(
+      ["issue", "view", issue, "--repo", repo, "--json", "number,title,state,updatedAt,body,url"],
+      runner,
+      warnings,
+      {}
+    )
+    body = payload["body"].to_s
+    {
+      "dashboard_repo" => repo,
+      "dashboard_issue" => payload["number"] || issue.to_i,
+      "dashboard_url" => payload["url"],
+      "dashboard_state" => payload["state"],
+      "dashboard_updated_at" => payload["updatedAt"],
+      "dashboard_present" => !payload.empty? && (marker.empty? || body.include?(marker)),
+      "marker" => marker
+    }
+  end
+
   def build_findings(report)
     findings = []
     rulesets = report.dig("live", "org_rulesets") || []
@@ -323,13 +435,14 @@ module EvalOpsEngineeringPracticesAudit
 
     Array(report.dig("live", "branch_protection")).each do |item|
       next unless item["tier"] == "critical"
-      next unless item["required_status_checks"].empty?
+      required = Array(item["required_status_checks"]) + Array(item["ruleset_required_status_checks"])
+      next unless required.empty?
 
       findings << {
         "practice" => "org-rulesets",
         "severity" => "medium",
         "repo" => item["repo"],
-        "message" => "Critical repo has no required status checks in branch protection."
+        "message" => "Critical repo has no required status checks in branch protection or applicable org rulesets."
       }
     end
 
@@ -367,14 +480,25 @@ module EvalOpsEngineeringPracticesAudit
         "high" => high
       }
     end
+    secret_open = security.dig("secret_scanning", "total").to_i
+    if secret_open.positive?
+      findings << {
+        "practice" => "security-slo",
+        "severity" => "high",
+        "message" => "Open secret-scanning alerts require rotation, revocation, false-positive disposition, or accepted-risk evidence.",
+        "open" => secret_open
+      }
+    end
 
+    train_state = report.dig("live", "release_train_state") || {}
     Array(report.dig("live", "release_train_queries")).each do |query|
       next unless query["total_count"].to_i.positive?
+      next if query["key"] == "deploy_image_sync_prs" && train_state["dashboard_present"]
 
       findings << {
         "practice" => "release-train-state",
         "severity" => "medium",
-        "message" => "#{query["key"]} matched #{query["total_count"]} merged PR(s) in the audit window."
+        "message" => "#{query["key"]} matched #{query["total_count"]} merged PR(s) in the audit window without an active release-train state record."
       }
     end
 
@@ -390,8 +514,11 @@ module EvalOpsEngineeringPracticesAudit
     end
     required_files = contract.dig("live_audit", "required_files") || {}
 
+    rulesets = org_rulesets(owner, runner, warnings)
     branch = sampled_repos.map do |repo|
-      branch_protection(repo, runner, warnings).merge("tier" => tiers.fetch(repo, "unknown"))
+      branch_protection(repo, runner, warnings)
+        .merge("tier" => tiers.fetch(repo, "unknown"))
+        .merge(ruleset_required_status_policy(repo, rulesets))
     end
     issue_queries = (contract.dig("live_audit", "issue_queries") || {}).map do |key, query|
       { "key" => key, "query" => query, "total_count" => search_count(query, runner, warnings) }
@@ -399,10 +526,12 @@ module EvalOpsEngineeringPracticesAudit
     release_queries = (contract.dig("live_audit", "release_train_queries") || {}).map do |key, query|
       { "key" => key, "query" => query, "total_count" => search_count(query, runner, warnings) }
     end
+    train_state = release_train_state(contract.dig("live_audit", "release_train_state") || {}, runner, warnings)
     backlog = backlog_hygiene(contract.fetch("owner_repo"), runner, warnings)
+    secret_scanning = secret_scanning_alerts(owner, runner, warnings)
     live = {
       "owner" => owner,
-      "org_rulesets" => org_rulesets(owner, runner, warnings),
+      "org_rulesets" => rulesets,
       "branch_protection" => branch,
       "repo_rails" => repo_file_adoption(
         sampled_repos,
@@ -414,10 +543,12 @@ module EvalOpsEngineeringPracticesAudit
       ),
       "issue_queries" => issue_queries,
       "release_train_queries" => release_queries,
+      "release_train_state" => train_state,
       "backlog_hygiene" => backlog,
       "security_alerts" => {
         "dependabot" => dependabot_alerts(owner, runner, warnings),
-        "secret_scanning_open" => alert_count(owner, "secret-scanning", runner, warnings),
+        "secret_scanning" => secret_scanning,
+        "secret_scanning_open" => secret_scanning.fetch("total", 0),
         "excluded_scanners" => Array(contract.dig("live_audit", "security_alert_slo", "excluded_scanners"))
       }
     }
@@ -466,9 +597,14 @@ module EvalOpsEngineeringPracticesAudit
     lines << "## Live Signals"
     rulesets = Array(report.dig("live", "org_rulesets"))
     lines << "- Org rulesets: `#{rulesets.length}`"
+    critical = Array(report.dig("live", "branch_protection")).select { |item| item["tier"] == "critical" }
+    covered = critical.count do |item|
+      (Array(item["required_status_checks"]) + Array(item["ruleset_required_status_checks"])).any?
+    end
+    lines << "- Critical repo required-check policy: `#{covered}/#{critical.length}`"
     security = report.dig("live", "security_alerts") || {}
     lines << "- Dependabot open alerts: `#{security.dig("dependabot", "total") || 0}`"
-    lines << "- Secret scanning open alerts: `#{security["secret_scanning_open"] || 0}`"
+    lines << "- Secret scanning open alerts: `#{security.dig("secret_scanning", "total") || security["secret_scanning_open"] || 0}`"
     unless Array(security["excluded_scanners"]).empty?
       lines << "- Excluded scanners: `#{security["excluded_scanners"].join(", ")}`"
     end
@@ -477,6 +613,12 @@ module EvalOpsEngineeringPracticesAudit
     end
     Array(report.dig("live", "release_train_queries")).each do |query|
       lines << "- #{query["key"]}: `#{query["total_count"]}`"
+    end
+    train_state = report.dig("live", "release_train_state") || {}
+    if train_state.key?("dashboard_present")
+      state = train_state["dashboard_present"] ? "present" : "missing"
+      target = train_state["dashboard_url"] || [train_state["dashboard_repo"], train_state["dashboard_issue"]].compact.join("#")
+      lines << "- release_train_dashboard: `#{state}` #{target}"
     end
 
     lines << ""
@@ -487,6 +629,35 @@ module EvalOpsEngineeringPracticesAudit
     else
       missing.each do |item|
         lines << "- `#{item["repo"]}` (#{item["tier"]}): #{item["missing_required_files"].join(", ")}"
+      end
+    end
+
+    dependabot_repos = security.dig("dependabot", "critical_high_by_repo") || {}
+    unless dependabot_repos.empty?
+      lines << ""
+      lines << "## Security Remediation Ledger"
+      lines << ""
+      lines << "### Critical/High Dependabot Alerts"
+      dependabot_repos.each do |repo, data|
+        severities = data.fetch("by_severity", {}).map { |severity, count| "#{severity}: #{count}" }.join(", ")
+        lines << "- `#{repo}` (#{data.fetch("total", 0)}; #{severities})"
+        Array(data["packages"]).first(8).each do |package|
+          advisory = Array(package["advisories"]).first(3).join(", ")
+          suffix = advisory.empty? ? "" : " - #{advisory}"
+          lines << "  - `#{package["severity"]}` `#{package["ecosystem"]}/#{package["package"]}`: #{package["count"]}#{suffix}"
+        end
+      end
+    end
+
+    secret_repos = security.dig("secret_scanning", "by_repo") || {}
+    unless secret_repos.empty?
+      lines << "" if dependabot_repos.empty?
+      lines << "## Security Remediation Ledger" if dependabot_repos.empty?
+      lines << ""
+      lines << "### Open Secret-Scanning Alerts"
+      secret_repos.each do |repo, types|
+        type_summary = types.map { |type, count| "#{type}: #{count}" }.join(", ")
+        lines << "- `#{repo}`: #{type_summary}"
       end
     end
 

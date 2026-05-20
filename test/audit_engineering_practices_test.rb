@@ -50,6 +50,24 @@ class AuditEngineeringPracticesTest < Minitest::Test
     JSON.parse(JSON.pretty_generate(report))
   end
 
+  def test_required_status_ruleset_satisfies_critical_repo_policy
+    contract = EvalOpsEngineeringPracticesAudit.load_contract(".github/contracts/engineering-practices.yml")
+    contract["live_audit"]["sampled_repos"] = ["evalops/platform"]
+    contract["repo_tiers"]["critical"]["repos"] = ["evalops/platform"]
+    runner = RulesetPolicyGhRunner.new
+
+    report = EvalOpsEngineeringPracticesAudit.live_audit(
+      contract,
+      runner: runner,
+      root: Dir.pwd,
+      generated_at: Time.utc(2026, 5, 20, 4, 0, 0)
+    )
+
+    policy = report.dig("live", "branch_protection").fetch(0)
+    assert_equal ["ci"], policy.fetch("ruleset_required_status_checks")
+    refute report.fetch("findings").any? { |finding| finding.fetch("practice") == "org-rulesets" }
+  end
+
   class FakeGhRunner
     def initialize
       @files = {
@@ -145,6 +163,65 @@ class AuditEngineeringPracticesTest < Minitest::Test
           "severity" => "high"
         }
       }
+    end
+  end
+
+  class RulesetPolicyGhRunner
+    def call(args)
+      command = args.join(" ")
+      return json([ruleset_summary]) if command == "api -X GET /orgs/evalops/rulesets"
+      return json(ruleset_detail) if command == "api -X GET /orgs/evalops/rulesets/1"
+      return json({}) if command.include?("/branches/main/protection")
+      return json({ "path" => "ok" }) if command.include?("/contents/")
+      return json({ "total_count" => 0, "incomplete_results" => false }) if command.start_with?("api -X GET /search/issues")
+      return json([]) if command.start_with?("issue list")
+      return ["", "", true] if command.start_with?("issue view")
+      return ["", "", true] if command.include?("/dependabot/alerts")
+      return ["", "", true] if command.include?("/secret-scanning/alerts")
+
+      json({})
+    end
+
+    private
+
+    def json(value)
+      [JSON.generate(value), "", true]
+    end
+
+    def ruleset_summary
+      {
+        "id" => 1,
+        "name" => "EvalOps platform required checks (evaluate)",
+        "target" => "branch",
+        "enforcement" => "evaluate"
+      }
+    end
+
+    def ruleset_detail
+      ruleset_summary.merge(
+        "conditions" => {
+          "repository_name" => {
+            "include" => ["platform"],
+            "exclude" => []
+          },
+          "ref_name" => {
+            "include" => ["~DEFAULT_BRANCH"],
+            "exclude" => []
+          }
+        },
+        "rules" => [
+          {
+            "type" => "required_status_checks",
+            "parameters" => {
+              "required_status_checks" => [
+                {
+                  "context" => "ci"
+                }
+              ]
+            }
+          }
+        ]
+      )
     end
   end
 end

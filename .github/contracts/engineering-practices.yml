@@ -189,6 +189,10 @@ live_audit:
   release_train_queries:
     deploy_hold_prs: 'repo:evalops/deploy is:pr is:merged merged:>=2026-05-06 "Hold prod-continuous release train" in:title'
     deploy_image_sync_prs: 'repo:evalops/deploy is:pr is:merged merged:>=2026-05-06 "sync" "image" in:title'
+  release_train_state:
+    dashboard_repo: evalops/deploy
+    dashboard_issue: 1344
+    marker: '<!-- evalops:release-train-dashboard -->'
   security_alert_slo:
     critical_days: 1
     high_days: 7
