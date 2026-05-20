@@ -1,0 +1,13 @@
+name: EvalOpsBot Review Canary Fixture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'echo "evalopsbot review canary 26136425238"'
