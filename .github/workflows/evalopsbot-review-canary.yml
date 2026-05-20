@@ -29,6 +29,8 @@ jobs:
       PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Configure GitHub App token
         shell: bash
@@ -58,6 +60,8 @@ jobs:
           set -euo pipefail
           git config user.name "EvalOpsBot canary"
           git config user.email "evalopsbot-canary@users.noreply.github.com"
+          gh auth setup-git
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${CANARY_REPO}.git"
           git fetch origin main --depth=1
           git checkout -B "${CANARY_BRANCH}" origin/main
           mkdir -p .github/workflows
