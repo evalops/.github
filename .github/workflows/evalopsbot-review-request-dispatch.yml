@@ -30,8 +30,30 @@ jobs:
       REVIEWER: ${{ github.event_name == 'workflow_dispatch' && inputs.reviewer || 'EvalOpsBot' }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Configure GitHub App token
+        shell: bash
+        env:
+          APP_ID: ${{ secrets.EVALOPS_PR_LENS_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.EVALOPS_PR_LENS_APP_PRIVATE_KEY }}
+          APP_INSTALLATION_ID: ${{ secrets.EVALOPS_PR_LENS_APP_INSTALLATION_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ID}" ] && [ -n "${APP_PRIVATE_KEY}" ]; then
+            token="$(
+              EVALOPS_PR_LENS_APP_ID="${APP_ID}" \
+              EVALOPS_PR_LENS_APP_PRIVATE_KEY="${APP_PRIVATE_KEY}" \
+              EVALOPS_PR_LENS_APP_INSTALLATION_ID="${APP_INSTALLATION_ID}" \
+              ruby .github/scripts/evalops-pr-lens-review.rb mint-app-token \
+                --owner evalops \
+                --repositories "${PR_LENS_APP_REPOSITORIES}"
+            )"
+            echo "::add-mask::${token}"
+            echo "GH_TOKEN=${token}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Require cross-repo review token
         shell: bash

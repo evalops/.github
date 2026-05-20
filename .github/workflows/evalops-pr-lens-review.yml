@@ -51,8 +51,30 @@ jobs:
       GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN || secrets.EVALOPS_ORG_READ_TOKEN }}
       TARGET_REPOS: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repos || github.event.client_payload.target_repo) || inputs.target_repos || 'evalops/platform,evalops/deploy,evalops/maestro-internal' }}
       TARGET_PRS: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_prs || github.event.client_payload.target_pr) || inputs.target_prs || '' }}
+      PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Configure GitHub App token
+        shell: bash
+        env:
+          APP_ID: ${{ secrets.EVALOPS_PR_LENS_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.EVALOPS_PR_LENS_APP_PRIVATE_KEY }}
+          APP_INSTALLATION_ID: ${{ secrets.EVALOPS_PR_LENS_APP_INSTALLATION_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ID}" ] && [ -n "${APP_PRIVATE_KEY}" ]; then
+            token="$(
+              EVALOPS_PR_LENS_APP_ID="${APP_ID}" \
+              EVALOPS_PR_LENS_APP_PRIVATE_KEY="${APP_PRIVATE_KEY}" \
+              EVALOPS_PR_LENS_APP_INSTALLATION_ID="${APP_INSTALLATION_ID}" \
+              ruby .github/scripts/evalops-pr-lens-review.rb mint-app-token \
+                --owner evalops \
+                --repositories "${PR_LENS_APP_REPOSITORIES}"
+            )"
+            echo "::add-mask::${token}"
+            echo "GH_TOKEN=${token}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Require cross-repo GitHub token
         shell: bash
@@ -98,15 +120,38 @@ jobs:
       REVIEW_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || secrets.EVALOPS_ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.EVALOPS_OPENAI_API_KEY }}
-      PR_LENS_PROVIDER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.provider || inputs.provider || 'anthropic' }}
-      PR_LENS_MODEL: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.model || inputs.model || 'claude-opus-4-7' }}
-      PR_LENS_MAX_DIFF_BYTES: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.max_diff_bytes || inputs.max_diff_bytes || '180000' }}
+      PR_LENS_PROVIDER_OVERRIDE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.provider || github.event_name == 'workflow_dispatch' && inputs.provider || '' }}
+      PR_LENS_MODEL_OVERRIDE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.model || github.event_name == 'workflow_dispatch' && inputs.model || '' }}
+      PR_LENS_MAX_DIFF_BYTES_OVERRIDE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.max_diff_bytes || github.event_name == 'workflow_dispatch' && inputs.max_diff_bytes || '' }}
+      PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Checkout org review helpers
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           path: org-defaults
+
+      - name: Configure GitHub App token
+        shell: bash
+        env:
+          APP_ID: ${{ secrets.EVALOPS_PR_LENS_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.EVALOPS_PR_LENS_APP_PRIVATE_KEY }}
+          APP_INSTALLATION_ID: ${{ secrets.EVALOPS_PR_LENS_APP_INSTALLATION_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ID}" ] && [ -n "${APP_PRIVATE_KEY}" ]; then
+            token="$(
+              EVALOPS_PR_LENS_APP_ID="${APP_ID}" \
+              EVALOPS_PR_LENS_APP_PRIVATE_KEY="${APP_PRIVATE_KEY}" \
+              EVALOPS_PR_LENS_APP_INSTALLATION_ID="${APP_INSTALLATION_ID}" \
+              ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb mint-app-token \
+                --owner evalops \
+                --repositories "${PR_LENS_APP_REPOSITORIES}"
+            )"
+            echo "::add-mask::${token}"
+            echo "GH_TOKEN=${token}" >> "${GITHUB_ENV}"
+            echo "REVIEW_TOKEN=${token}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Require cross-repo write token
         shell: bash
@@ -121,12 +166,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${PR_LENS_PROVIDER}" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY}" ]; then
-            echo "::error::Set ANTHROPIC_API_KEY or EVALOPS_ANTHROPIC_API_KEY for Opus lens review."
-            exit 2
-          fi
-          if [ "${PR_LENS_PROVIDER}" = "openai" ] && [ -z "${OPENAI_API_KEY}" ]; then
-            echo "::error::Set OPENAI_API_KEY or EVALOPS_OPENAI_API_KEY for OpenAI lens review."
+          if [ -z "${ANTHROPIC_API_KEY}" ] && [ -z "${OPENAI_API_KEY}" ]; then
+            echo "::error::Set ANTHROPIC_API_KEY/EVALOPS_ANTHROPIC_API_KEY or OPENAI_API_KEY/EVALOPS_OPENAI_API_KEY for PR lens review."
             exit 2
           fi
 
@@ -174,17 +215,27 @@ jobs:
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
         run: |
           set -euo pipefail
-          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb run-lens \
+          args=(
+            run-lens
             --repo "${TARGET_REPO}" \
             --pr "${PR_NUMBER}" \
             --lens "${LENS}" \
             --workspace target \
             --base-sha "${BASE_SHA}" \
             --head-sha "${HEAD_SHA}" \
-            --output lens-review.json \
-            --provider "${PR_LENS_PROVIDER}" \
-            --model "${PR_LENS_MODEL}" \
-            --max-diff-bytes "${PR_LENS_MAX_DIFF_BYTES}"
+            --output lens-review.json
+            --routing-config org-defaults/.github/pr-lens-routing.yml
+          )
+          if [ -n "${PR_LENS_PROVIDER_OVERRIDE}" ]; then
+            args+=(--provider "${PR_LENS_PROVIDER_OVERRIDE}")
+          fi
+          if [ -n "${PR_LENS_MODEL_OVERRIDE}" ]; then
+            args+=(--model "${PR_LENS_MODEL_OVERRIDE}")
+          fi
+          if [ -n "${PR_LENS_MAX_DIFF_BYTES_OVERRIDE}" ]; then
+            args+=(--max-diff-bytes "${PR_LENS_MAX_DIFF_BYTES_OVERRIDE}")
+          fi
+          ruby org-defaults/.github/scripts/evalops-pr-lens-review.rb "${args[@]}"
 
       - name: Complete lens status
         if: ${{ success() && steps.refs.outputs.skip != 'true' }}
@@ -251,10 +302,32 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
       PR_LENS_MIN_CONFIDENCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.min_confidence || inputs.min_confidence || '0.82' }}
+      PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Checkout org review helpers
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Configure GitHub App token
+        shell: bash
+        env:
+          APP_ID: ${{ secrets.EVALOPS_PR_LENS_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.EVALOPS_PR_LENS_APP_PRIVATE_KEY }}
+          APP_INSTALLATION_ID: ${{ secrets.EVALOPS_PR_LENS_APP_INSTALLATION_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ID}" ] && [ -n "${APP_PRIVATE_KEY}" ]; then
+            token="$(
+              EVALOPS_PR_LENS_APP_ID="${APP_ID}" \
+              EVALOPS_PR_LENS_APP_PRIVATE_KEY="${APP_PRIVATE_KEY}" \
+              EVALOPS_PR_LENS_APP_INSTALLATION_ID="${APP_INSTALLATION_ID}" \
+              ruby .github/scripts/evalops-pr-lens-review.rb mint-app-token \
+                --owner evalops \
+                --repositories "${PR_LENS_APP_REPOSITORIES}"
+            )"
+            echo "::add-mask::${token}"
+            echo "GH_TOKEN=${token}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Download lens artifacts
         uses: actions/download-artifact@v4
@@ -277,7 +350,8 @@ jobs:
           ruby .github/scripts/evalops-pr-lens-review.rb meta-review \
             --artifact-root artifacts \
             --min-confidence "${PR_LENS_MIN_CONFIDENCE}" \
-            --output meta-review.json
+            --output meta-review.json \
+            --markdown-output "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload meta review ledger
         uses: actions/upload-artifact@v4

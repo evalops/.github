@@ -146,6 +146,104 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_equal %w[Higher Lower], ranked.map { |finding| finding.fetch("title") }
   end
 
+  def test_dedupe_and_rank_merges_same_defect_across_nearby_lens_findings
+    findings = [
+      finding("Workflow token can write every repo", 0.91, 1, ".github/workflows/release.yml", 22).merge(
+        "repo" => "evalops/deploy",
+        "pr" => 10,
+        "lens" => "iam-blast-radius",
+        "head_sha" => "abc123",
+        "check_id" => "evalops-pr-lens/iam-blast-radius"
+      ),
+      finding("Release workflow token writes every repository", 0.96, 1, ".github/workflows/release.yml", 24).merge(
+        "repo" => "evalops/deploy",
+        "pr" => 10,
+        "lens" => "migration-safety",
+        "head_sha" => "abc123",
+        "check_id" => "evalops-pr-lens/migration-safety"
+      )
+    ]
+
+    ranked = EvalOpsPrLensReview.dedupe_and_rank(findings)
+
+    assert_equal 1, ranked.length
+    assert_equal "Release workflow token writes every repository", ranked.fetch(0).fetch("title")
+  end
+
+  def test_post_status_also_attempts_check_run_without_breaking_status_publication
+    calls = []
+    ok = Object.new
+    ok.define_singleton_method(:success?) { true }
+    capture = lambda do |_env, *command, stdin_data: nil|
+      calls << { command: command, stdin_data: stdin_data }
+      if command.include?("check-runs?check_name=evalops-pr-lens%2Fmeta-review&per_page=100")
+        [JSON.generate("check_runs" => []), "", ok]
+      else
+        ["{}", "", ok]
+      end
+    end
+
+    Open3.stub(:capture3, capture) do
+      EvalOpsPrLensReview.post_status(
+        repo: "evalops/deploy",
+        sha: "abc123",
+        context: "evalops-pr-lens/meta-review",
+        state: "success",
+        description: "No high-confidence PR lens findings",
+        target_url: "https://github.com/evalops/.github/actions/runs/1"
+      )
+    end
+
+    assert calls.any? { |call| call.fetch(:command).include?("repos/evalops/deploy/statuses/abc123") }
+    check_create = calls.find { |call| call.fetch(:command).include?("repos/evalops/deploy/check-runs") }
+    assert check_create
+    body = JSON.parse(check_create.fetch(:stdin_data))
+    assert_equal "evalops-pr-lens/meta-review", body.fetch("name")
+    assert_equal "completed", body.fetch("status")
+    assert_equal "success", body.fetch("conclusion")
+  end
+
+  def test_github_app_jwt_uses_app_id_as_issuer
+    key = OpenSSL::PKey::RSA.generate(2048)
+    jwt = EvalOpsPrLensReview.github_app_jwt(app_id: "12345", private_key: key.to_pem, now: Time.utc(2026, 5, 20, 1, 2, 3))
+    _header, payload, _signature = jwt.split(".")
+    decoded = JSON.parse(Base64.urlsafe_decode64(payload + ("=" * ((4 - payload.length % 4) % 4))))
+
+    assert_equal "12345", decoded.fetch("iss")
+    assert_equal Time.utc(2026, 5, 20, 1, 1, 3).to_i, decoded.fetch("iat")
+  end
+
+  def test_lens_routing_config_overrides_default_review_options
+    Dir.mktmpdir do |dir|
+      config = File.join(dir, "routing.yml")
+      File.write(
+        config,
+        <<~YAML
+          defaults:
+            provider: anthropic
+            model: claude-opus-4-7
+            max_diff_bytes: 180000
+          lenses:
+            generated-sdk-delta:
+              model: claude-opus-4-7-generated
+              max_diff_bytes: 260000
+        YAML
+      )
+
+      options = EvalOpsPrLensReview.effective_review_options(
+        lens: "generated-sdk-delta",
+        provider: "openai",
+        model: "gpt-5.2",
+        max_diff_bytes: 1000,
+        routing_config: config
+      )
+
+      assert_equal "anthropic", options.fetch(:provider)
+      assert_equal "claude-opus-4-7-generated", options.fetch(:model)
+      assert_equal 260000, options.fetch(:max_diff_bytes)
+    end
+  end
+
   def test_comment_body_contains_only_ranked_findings
     findings = [
       finding("Unsafe IAM expansion", 0.94, 1, "infra/main.tf", 22).merge(
