@@ -43,17 +43,17 @@ operational assumptions.
 
 ### EvalOpsBot Review Requests
 
-Use `.github/workflows/evalopsbot-review-request-dispatch.yml` as the org-wide
-bridge from GitHub review requests to the deep PR lens workflow. Every five
-minutes it searches open EvalOps PRs with `review-requested:EvalOpsBot`, skips
-head SHAs that already have an `evalops-pr-lens/meta-review` status, marks new
-matches as pending, and dispatches `.github/workflows/evalops-pr-lens-review.yml`
-for that exact `repo#PR`.
+Use the EvalOpsBot webhook relay as the primary bridge from GitHub review
+requests to the deep PR lens workflow. The relay receives
+`pull_request.review_requested`, filters for `requested_reviewer.login ==
+EvalOpsBot`, and dispatches `.github/workflows/evalops-pr-lens-review.yml` for
+that exact `repo#PR`.
 
-This keeps the request path inside GitHub Actions and existing review secrets
-instead of adding a standalone webhook relay. If lower latency becomes important,
-the same `evalopsbot-review-requested` `repository_dispatch` contract can be
-called by an org webhook relay.
+`.github/workflows/evalopsbot-review-request-dispatch.yml` remains as the
+hourly fallback. It searches open EvalOps PRs with
+`review-requested:EvalOpsBot`, skips head SHAs that already have an
+`evalops-pr-lens/meta-review` signal, marks new matches as pending, and
+dispatches the same workflow contract.
 
 ### Codex Workflow Templates
 
@@ -331,15 +331,19 @@ reviewer per lens:
 - generated SDK delta
 - eval regression risk
 
-Each lens writes a stable commit status context named
+Each lens writes a stable commit status context and best-effort Check Run named
 `evalops-pr-lens/<lens>`. The meta-review step ranks findings by confidence,
-updates `evalops-pr-lens/meta-review`, and only posts a PR comment when findings
-clear the configured high-confidence threshold.
+updates `evalops-pr-lens/meta-review`, writes an operator summary to the workflow
+run, and only posts a PR comment when findings clear the configured
+high-confidence threshold.
 
 Required secrets in `evalops/.github`:
 
 - `EVALOPS_PR_LENS_TOKEN`: GitHub token with read/write access to the target
-  repos for statuses and PR comments.
+  repos for statuses and PR comments. This is the fallback path.
+- `EVALOPS_PR_LENS_APP_ID`, `EVALOPS_PR_LENS_APP_PRIVATE_KEY`, and
+  `EVALOPS_PR_LENS_APP_INSTALLATION_ID`: preferred GitHub App auth path for
+  dispatch, comments, statuses, and Checks.
 - `ANTHROPIC_API_KEY` or `EVALOPS_ANTHROPIC_API_KEY`: Anthropic key for Opus
   lens reviewers.
 - `OPENAI_API_KEY` or `EVALOPS_OPENAI_API_KEY`: optional fallback when manually
@@ -378,6 +382,12 @@ The workflow also accepts `target_prs`, `target_repos`, `provider`, `model`,
 `max_diff_bytes`, and `min_confidence` in `client_payload` for controlled
 operator overrides. Keep the relay token scoped to dispatching workflows in
 `evalops/.github`; the review workflow itself owns the cross-repo read/write
-token and model-provider credentials. The scheduled
-`evalopsbot-review-request-dispatch.yml` workflow remains as an hourly fallback
-for missed webhook deliveries, not the primary trigger path.
+token and model-provider credentials. Lens-specific routing defaults live in
+`.github/pr-lens-routing.yml`.
+
+`.github/workflows/evalopsbot-review-canary.yml` creates a harmless canary PR,
+requests review from `EvalOpsBot`, waits for the deep-review meta signal, and
+then closes the canary PR. `.github/workflows/evalopsbot-review-setup-audit.yml`
+checks the configured target repository list, fallback workflows, and selected
+review secret coverage so onboarding drift is visible before a real review
+request is missed.

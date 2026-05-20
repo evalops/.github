@@ -2,13 +2,16 @@
 # frozen_string_literal: true
 
 require "base64"
+require "digest"
 require "fileutils"
 require "json"
 require "net/http"
+require "openssl"
 require "open3"
 require "optparse"
 require "time"
 require "uri"
+require "yaml"
 
 module EvalOpsPrLensReview
   TARGET_REPOS = %w[
@@ -122,9 +125,15 @@ module EvalOpsPrLensReview
   REVIEW_REQUESTED_DISPATCH_SOURCE = "evalopsbot-review-request-dispatch"
   DEFAULT_MIN_CONFIDENCE = 0.82
   DEFAULT_MODEL = "claude-opus-4-7"
+  DEFAULT_PROVIDER = "anthropic"
   DEFAULT_MAX_DIFF_BYTES = 180_000
   MAX_FINDINGS_PER_COMMENT = 12
   MAX_CONTEXT_ITEMS = 25
+  DEFAULT_ROUTING_CONFIG_PATH = ".github/pr-lens-routing.yml"
+  COMMON_FINGERPRINT_TOKENS = %w[
+    the and for with from that this into when are was were has have should would could
+    evalops review finding issue risk missing unsafe fails failure causes cause because
+  ].freeze
 
   module_function
 
@@ -168,6 +177,29 @@ module EvalOpsPrLensReview
     return lens if LENSES.key?(lens)
 
     raise ArgumentError, "unknown lens #{lens.inspect}; expected one of #{LENSES.keys.join(", ")}"
+  end
+
+  def load_routing_config(path)
+    return {} if path.to_s.empty? || !File.exist?(path)
+
+    YAML.safe_load(File.read(path), permitted_classes: [], aliases: false) || {}
+  end
+
+  def routing_for_lens(lens, config)
+    lens = valid_lens!(lens)
+    defaults = config.fetch("defaults", {}) || {}
+    lenses = config.fetch("lenses", {}) || {}
+    route = lenses.fetch(lens, {}) || {}
+    defaults.merge(route)
+  end
+
+  def effective_review_options(lens:, provider:, model:, max_diff_bytes:, routing_config:)
+    route = routing_for_lens(lens, load_routing_config(routing_config))
+    {
+      provider: route.fetch("provider", provider || DEFAULT_PROVIDER).to_s,
+      model: route.fetch("model", model || DEFAULT_MODEL).to_s,
+      max_diff_bytes: Integer(route.fetch("max_diff_bytes", max_diff_bytes || DEFAULT_MAX_DIFF_BYTES))
+    }
   end
 
   def lens_reason_for_path(path)
@@ -288,6 +320,61 @@ module EvalOpsPrLensReview
     gh_api("--method", "POST", "repos/evalops/.github/dispatches", input: JSON.generate(payload))
   end
 
+  def base64url(value)
+    Base64.strict_encode64(value).tr("+/", "-_").delete("=")
+  end
+
+  def normalize_private_key(raw)
+    raw.to_s.gsub("\\n", "\n")
+  end
+
+  def github_app_jwt(app_id:, private_key:, now: Time.now)
+    key = OpenSSL::PKey.read(normalize_private_key(private_key))
+    header = base64url(JSON.generate({ alg: "RS256", typ: "JWT" }))
+    payload = base64url(
+      JSON.generate(
+        {
+          iat: now.to_i - 60,
+          exp: now.to_i + 540,
+          iss: app_id.to_s
+        }
+      )
+    )
+    unsigned = "#{header}.#{payload}"
+    "#{unsigned}.#{base64url(key.sign(OpenSSL::Digest::SHA256.new, unsigned))}"
+  end
+
+  def github_app_installation_id(owner:, jwt:)
+    gh_api_json("orgs/#{owner}/installation", token: jwt).fetch("id")
+  end
+
+  def create_app_installation_token(app_id:, private_key:, owner:, installation_id: nil, repositories: [], permissions: {})
+    jwt = github_app_jwt(app_id: app_id, private_key: private_key)
+    resolved_installation_id = installation_id.to_s.empty? ? github_app_installation_id(owner: owner, jwt: jwt) : installation_id
+    payload = {}
+    repo_names = repositories.map { |repo| repo.to_s.split("/").last }.reject(&:empty?).uniq
+    payload["repositories"] = repo_names unless repo_names.empty?
+    payload["permissions"] = permissions unless permissions.empty?
+    response = gh_api_json(
+      "--method",
+      "POST",
+      "app/installations/#{resolved_installation_id}/access_tokens",
+      input: JSON.generate(payload),
+      token: jwt
+    )
+    response.fetch("token")
+  end
+
+  def default_app_token_permissions
+    {
+      "checks" => "write",
+      "contents" => "write",
+      "issues" => "write",
+      "pull_requests" => "write",
+      "statuses" => "write"
+    }
+  end
+
   def mark_review_queued(repo:, head_sha:, target_url:)
     post_status(
       repo: repo,
@@ -403,6 +490,76 @@ module EvalOpsPrLensReview
     fields += ["-f", "target_url=#{target_url}"] if target_url && !target_url.empty?
 
     gh_api("--method", "POST", "repos/#{repo}/statuses/#{sha}", *fields)
+    post_check_run(
+      repo: repo,
+      sha: sha,
+      name: context,
+      state: state,
+      description: description,
+      target_url: target_url
+    )
+  end
+
+  def check_run_external_id(name:, sha:)
+    digest = Digest::SHA256.hexdigest("#{name}\0#{sha}")
+    "evalops-pr-lens:#{digest}"
+  end
+
+  def check_run_state(state)
+    case state.to_s
+    when "pending"
+      ["in_progress", nil]
+    when "success"
+      ["completed", "success"]
+    when "failure"
+      ["completed", "failure"]
+    when "error"
+      ["completed", "failure"]
+    else
+      ["completed", "neutral"]
+    end
+  end
+
+  def existing_check_run_id(repo:, sha:, name:, external_id:)
+    encoded_name = URI.encode_www_form_component(name)
+    response = gh_api_json("repos/#{repo}/commits/#{sha}/check-runs?check_name=#{encoded_name}&per_page=100")
+    Array(response.fetch("check_runs", [])).find { |row| row["external_id"] == external_id }&.fetch("id", nil)
+  end
+
+  def post_check_run(repo:, sha:, name:, state:, description:, target_url: nil)
+    status, conclusion = check_run_state(state)
+    external_id = check_run_external_id(name: name, sha: sha)
+    output = {
+      title: description.to_s[0, 255],
+      summary: description.to_s.empty? ? name : description.to_s
+    }
+    payload = {
+      name: name,
+      external_id: external_id,
+      details_url: target_url,
+      status: status,
+      output: output
+    }.compact
+    if status == "completed"
+      payload[:conclusion] = conclusion
+      payload[:completed_at] = Time.now.utc.iso8601
+    else
+      payload[:started_at] = Time.now.utc.iso8601
+    end
+
+    existing_id = existing_check_run_id(repo: repo, sha: sha, name: name, external_id: external_id)
+    if existing_id
+      gh_api("--method", "PATCH", "repos/#{repo}/check-runs/#{existing_id}", input: JSON.generate(payload))
+    else
+      gh_api(
+        "--method",
+        "POST",
+        "repos/#{repo}/check-runs",
+        input: JSON.generate(payload.merge(head_sha: sha))
+      )
+    end
+  rescue StandardError => e
+    warn "check-run publish skipped for #{repo}@#{sha} #{name}: #{e.message.lines.first.to_s.strip}"
   end
 
   def write_json(path, payload)
@@ -828,7 +985,14 @@ module EvalOpsPrLensReview
     }
   end
 
-  def run_lens(repo:, pr:, lens:, workspace:, base_sha:, head_sha:, output:, provider:, model:, max_diff_bytes:)
+  def run_lens(repo:, pr:, lens:, workspace:, base_sha:, head_sha:, output:, provider:, model:, max_diff_bytes:, routing_config: nil)
+    effective = effective_review_options(
+      lens: lens,
+      provider: provider,
+      model: model,
+      max_diff_bytes: max_diff_bytes,
+      routing_config: routing_config
+    )
     pr_json = pr_metadata(repo: repo, pr: pr)
     file_summary = pr_file_summary(repo: repo, pr: pr)
     review_context = pr_review_context(repo: repo, pr: pr, pr_json: pr_json, head_sha: head_sha)
@@ -837,7 +1001,7 @@ module EvalOpsPrLensReview
       workspace: workspace,
       base_sha: base_sha,
       head_sha: head_sha,
-      max_bytes: max_diff_bytes
+      max_bytes: effective.fetch(:max_diff_bytes)
     )
     prompt = build_lens_prompt(
       repo: repo,
@@ -852,8 +1016,8 @@ module EvalOpsPrLensReview
     )
     raw_response = call_llm(
       prompt: prompt,
-      provider: provider,
-      model: model
+      provider: effective.fetch(:provider),
+      model: effective.fetch(:model)
     )
     normalized = normalize_lens_review(
       extract_json(raw_response),
@@ -916,24 +1080,66 @@ module EvalOpsPrLensReview
     end
   end
 
-  def dedupe_and_rank(findings)
-    best_by_key = {}
-    findings.each do |finding|
-      location = finding.fetch("code_location")
-      key = [
-        finding.fetch("repo"),
-        finding.fetch("pr"),
-        location.fetch("path"),
-        location.fetch("line"),
-        finding.fetch("title").downcase.gsub(/\s+/, " ")
+  def fingerprint_tokens(text)
+    text.to_s.downcase.scan(/[a-z0-9][a-z0-9_-]{2,}/).map do |token|
+      normalized = token.sub(/ies\z/, "y").sub(/s\z/, "")
+      normalized = "repository" if %w[repo repository].include?(normalized)
+      normalized = "write" if %w[write writes writable].include?(normalized)
+      normalized
+    end.reject do |token|
+      COMMON_FINGERPRINT_TOKENS.include?(token)
+    end.uniq
+  end
+
+  def token_similarity(left, right)
+    left_tokens = fingerprint_tokens(left)
+    right_tokens = fingerprint_tokens(right)
+    return 0.0 if left_tokens.empty? || right_tokens.empty?
+
+    intersection = (left_tokens & right_tokens).length
+    union = (left_tokens | right_tokens).length
+    intersection.to_f / union
+  end
+
+  def duplicate_finding?(left, right)
+    return false unless left.fetch("repo") == right.fetch("repo")
+    return false unless Integer(left.fetch("pr")) == Integer(right.fetch("pr"))
+    return false unless left.fetch("head_sha") == right.fetch("head_sha")
+
+    left_location = left.fetch("code_location")
+    right_location = right.fetch("code_location")
+    same_path = left_location.fetch("path") == right_location.fetch("path")
+    return false unless same_path
+
+    line_distance = (Integer(left_location.fetch("line")) - Integer(right_location.fetch("line"))).abs
+    title_similarity = token_similarity(left.fetch("title"), right.fetch("title"))
+    body_similarity = token_similarity(left.fetch("body"), right.fetch("body"))
+
+    title_similarity >= 0.74 || body_similarity >= 0.82 || (line_distance <= 5 && title_similarity >= 0.5)
+  end
+
+  def better_finding(left, right)
+    [left, right].max_by do |finding|
+      [
+        finding.fetch("confidence_score"),
+        -finding.fetch("priority"),
+        finding.fetch("body").to_s.length
       ]
-      existing = best_by_key[key]
-      if existing.nil? || finding.fetch("confidence_score") > existing.fetch("confidence_score")
-        best_by_key[key] = finding
+    end
+  end
+
+  def dedupe_and_rank(findings)
+    deduped = []
+    findings.each do |finding|
+      existing_index = deduped.index { |candidate| duplicate_finding?(candidate, finding) }
+      if existing_index
+        deduped[existing_index] = better_finding(deduped.fetch(existing_index), finding)
+      else
+        deduped << finding
       end
     end
 
-    best_by_key.values.sort_by do |finding|
+    deduped.sort_by do |finding|
       [
         -finding.fetch("confidence_score"),
         finding.fetch("priority"),
@@ -1111,6 +1317,34 @@ module EvalOpsPrLensReview
     File.write(output, JSON.pretty_generate(result))
     result
   end
+
+  def markdown_meta_report(result)
+    lines = [
+      "## EvalOps PR Lens Review",
+      "",
+      "- Reviews: #{result.fetch("reviews")}",
+      "- Expected reviews: #{result.fetch("expected_reviews")}",
+      "- Published findings: #{result.fetch("published_findings").length}",
+      "- Run: #{result.fetch("run_url") || "unavailable"}",
+      "",
+      "### Coverage"
+    ]
+    result.fetch("coverage", []).each do |row|
+      lines << "- #{row.fetch("repo")}##{row.fetch("pr")}: #{row.fetch("expected")} expected, #{row.fetch("missing")} missing, #{row.fetch("skipped")} skipped; lenses #{Array(row.fetch("lenses", [])).join(", ")}"
+    end
+    if result.fetch("published_findings", []).empty?
+      lines << ""
+      lines << "No high-confidence findings cleared the publication threshold."
+    else
+      lines << ""
+      lines << "### Findings"
+      result.fetch("published_findings").first(MAX_FINDINGS_PER_COMMENT).each do |finding|
+        location = finding.fetch("code_location")
+        lines << "- P#{finding.fetch("priority")} #{format("%.2f", finding.fetch("confidence_score"))} #{finding.fetch("repo")}##{finding.fetch("pr")} #{location.fetch("path")}:#{location.fetch("line")} #{finding.fetch("title")}"
+      end
+    end
+    lines.join("\n")
+  end
 end
 
 if $PROGRAM_NAME == __FILE__
@@ -1181,9 +1415,10 @@ if $PROGRAM_NAME == __FILE__
     puts(result.fetch("skip") ? "Skipped #{options.fetch(:lens)}: #{result.fetch("reason")}" : "Prepared #{options.fetch(:repo)}##{options.fetch(:pr)}")
   when "run-lens"
     options = {
-      provider: ENV.fetch("PR_LENS_PROVIDER", "anthropic"),
+      provider: ENV.fetch("PR_LENS_PROVIDER", EvalOpsPrLensReview::DEFAULT_PROVIDER),
       model: ENV.fetch("PR_LENS_MODEL", EvalOpsPrLensReview::DEFAULT_MODEL),
-      max_diff_bytes: Integer(ENV.fetch("PR_LENS_MAX_DIFF_BYTES", EvalOpsPrLensReview::DEFAULT_MAX_DIFF_BYTES))
+      max_diff_bytes: Integer(ENV.fetch("PR_LENS_MAX_DIFF_BYTES", EvalOpsPrLensReview::DEFAULT_MAX_DIFF_BYTES)),
+      routing_config: ENV.fetch("PR_LENS_ROUTING_CONFIG", nil)
     }
     OptionParser.new do |parser|
       parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
@@ -1196,6 +1431,7 @@ if $PROGRAM_NAME == __FILE__
       parser.on("--provider PROVIDER") { |value| options[:provider] = value }
       parser.on("--model MODEL") { |value| options[:model] = value }
       parser.on("--max-diff-bytes BYTES", Integer) { |value| options[:max_diff_bytes] = value }
+      parser.on("--routing-config PATH") { |value| options[:routing_config] = value }
     end.parse!
     required = %i[repo pr lens workspace base_sha head_sha output]
     missing = required.select { |key| options[key].nil? || options[key].to_s.empty? }
@@ -1219,10 +1455,13 @@ if $PROGRAM_NAME == __FILE__
       parser.on("--artifact-root PATH") { |value| options[:artifact_root] = value }
       parser.on("--min-confidence NUMBER", Float) { |value| options[:min_confidence] = value }
       parser.on("--output PATH") { |value| options[:output] = value }
+      parser.on("--markdown-output PATH") { |value| options[:markdown_output] = value }
     end.parse!
     raise OptionParser::MissingArgument, "artifact-root" if options[:artifact_root].to_s.empty?
 
+    markdown_output = options.delete(:markdown_output)
     result = EvalOpsPrLensReview.meta_review(**options)
+    File.write(markdown_output, EvalOpsPrLensReview.markdown_meta_report(result)) if markdown_output
     puts "Published #{result.fetch("published_findings").length} high-confidence finding(s)."
   when "dispatch-review-requests"
     options = {
@@ -1250,8 +1489,32 @@ if $PROGRAM_NAME == __FILE__
       "skipped_count" => result.fetch("skipped_count")
     )
     puts "Found #{result.fetch("candidate_count")} EvalOpsBot review request(s); dispatched #{result.fetch("dispatched_count")}, skipped #{result.fetch("skipped_count")}."
+  when "mint-app-token"
+    options = {
+      app_id: ENV["EVALOPS_PR_LENS_APP_ID"] || ENV["GITHUB_APP_ID"],
+      private_key: ENV["EVALOPS_PR_LENS_APP_PRIVATE_KEY"] || ENV["GITHUB_APP_PRIVATE_KEY"],
+      installation_id: ENV["EVALOPS_PR_LENS_APP_INSTALLATION_ID"] || ENV["GITHUB_APP_INSTALLATION_ID"],
+      owner: "evalops",
+      repositories: [],
+      permissions: EvalOpsPrLensReview.default_app_token_permissions
+    }
+    OptionParser.new do |parser|
+      parser.on("--app-id ID") { |value| options[:app_id] = value }
+      parser.on("--private-key-file PATH") { |value| options[:private_key] = File.read(value) }
+      parser.on("--installation-id ID") { |value| options[:installation_id] = value }
+      parser.on("--owner OWNER") { |value| options[:owner] = value }
+      parser.on("--repositories CSV") { |value| options[:repositories] = EvalOpsPrLensReview.parse_list(value) }
+      parser.on("--permission KEY=VALUE") do |value|
+        key, permission = value.split("=", 2)
+        options[:permissions][key] = permission
+      end
+    end.parse!
+    raise OptionParser::MissingArgument, "app-id" if options[:app_id].to_s.empty?
+    raise OptionParser::MissingArgument, "private-key" if options[:private_key].to_s.empty?
+
+    puts EvalOpsPrLensReview.create_app_installation_token(**options)
   else
-    warn "usage: #{$PROGRAM_NAME} discover|post-status|prepare-workspace|run-lens|lens-status-description|meta-review|dispatch-review-requests"
+    warn "usage: #{$PROGRAM_NAME} discover|post-status|prepare-workspace|run-lens|lens-status-description|meta-review|dispatch-review-requests|mint-app-token"
     exit 2
   end
 end

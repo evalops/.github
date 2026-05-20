@@ -1,0 +1,18 @@
+defaults:
+  provider: anthropic
+  model: claude-opus-4-7
+  max_diff_bytes: 180000
+
+lenses:
+  iam-blast-radius:
+    model: claude-opus-4-7
+    max_diff_bytes: 220000
+  argo-manifest-skew:
+    model: claude-opus-4-7
+    max_diff_bytes: 220000
+  generated-sdk-delta:
+    model: claude-opus-4-7
+    max_diff_bytes: 260000
+  eval-regression-risk:
+    model: claude-opus-4-7
+    max_diff_bytes: 220000
