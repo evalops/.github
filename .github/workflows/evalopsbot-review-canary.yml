@@ -45,23 +45,16 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${CANARY_REPO}.git"
           git fetch origin main --depth=1
           git checkout -B "${CANARY_BRANCH}" origin/main
-          mkdir -p .github/workflows
-          cat > .github/workflows/evalopsbot-review-canary-fixture.yml <<YAML
-          name: EvalOpsBot Review Canary Fixture
+          mkdir -p .github/evalopsbot-canary
+          cat > .github/evalopsbot-canary/review-request.md <<MARKDOWN
+          # EvalOpsBot Review Canary
 
-          on:
-            workflow_dispatch:
+          This disposable canary file proves that requesting a review from EvalOpsBot
+          on a normal pull request triggers the central deep-review dispatcher.
 
-          permissions:
-            contents: read
-
-          jobs:
-            noop:
-              runs-on: ubuntu-latest
-              steps:
-                - run: 'echo "evalopsbot review canary ${GITHUB_RUN_ID}"'
-          YAML
-          git add .github/workflows/evalopsbot-review-canary-fixture.yml
+          Run: ${GITHUB_RUN_ID}
+          MARKDOWN
+          git add .github/evalopsbot-canary/review-request.md
           git commit -m "test: refresh evalopsbot review canary fixture"
           git push --force-with-lease origin "${CANARY_BRANCH}"
           pr_number="$(
