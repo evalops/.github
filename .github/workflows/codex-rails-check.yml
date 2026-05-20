@@ -7,6 +7,7 @@ on:
       - "**/AGENTS.md"
       - "labels.yml"
       - "README.md"
+      - ".github/CODEOWNERS"
       - ".agents/skills/**"
       - ".github/agent-mcp/**"
       - ".github/actionlint.yaml"
@@ -132,6 +133,21 @@ jobs:
             --json-output org-control-plane-contract-report.json \
             --markdown-output org-control-plane-contract-report.md
           cat org-control-plane-contract-report.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Validate engineering practices contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .github/contracts/engineering-practices.yml ]; then
+            echo "No engineering practices contract found."
+            exit 0
+          fi
+
+          ruby .github/scripts/audit-engineering-practices.rb \
+            --contract-only \
+            --json-output engineering-practices-contract-report.json \
+            --markdown-output engineering-practices-contract-report.md
+          cat engineering-practices-contract-report.md >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Validate canonical labels
         shell: bash

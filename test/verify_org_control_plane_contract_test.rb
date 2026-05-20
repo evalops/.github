@@ -62,9 +62,13 @@ class VerifyOrgControlPlaneContractTest < Minitest::Test
       ".github/scripts/verify-org-control-plane-contract.rb",
       ".github/scripts/validate-services-catalog.rb",
       ".github/scripts/sweep-recent-review-feedback.rb",
+      ".github/scripts/audit-engineering-practices.rb",
       ".github/workflows/codex-rails-check.yml",
+      ".github/workflows/engineering-practices-audit.yml",
       ".github/workflows/review-feedback-sentinel.yml",
+      "profile/ENGINEERING_PRACTICES.md",
       "test/verify_org_control_plane_contract_test.rb",
+      "test/audit_engineering_practices_test.rb",
       "test/validate_services_catalog_test.rb",
       "test/sweep_recent_review_feedback_test.rb",
       "test/evalops_pr_lens_review_test.rb"

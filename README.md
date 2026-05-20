@@ -146,6 +146,7 @@ rails:
 - workflow and workflow-template YAML
 - workflow template metadata
 - org control-plane contract shape and evidence chain
+- engineering-practices contract shape and live-audit entrypoint
 - canonical `labels.yml` shape
 - `AGENTS.md` presence and non-empty content
 - skill frontmatter
@@ -242,6 +243,31 @@ Markdown reports with source digests so downstream agents can cite the exact
 inputs and decisions behind an org-default change.
 
 See `profile/ORG_CONTROL_PLANE_CONTRACT.md` for the design note.
+
+### Engineering Practices Audit
+
+`.github/contracts/engineering-practices.yml` turns the current EvalOps
+engineering-practice standard into an auditable contract. It covers org
+rulesets, generated backlog lifecycle, release-train state, agent review,
+security SLOs, repo operating rails, and evidence-first completion.
+
+Validate only the contract shape locally:
+
+```bash
+ruby .github/scripts/audit-engineering-practices.rb --contract-only
+```
+
+Run the live audit with `gh` authenticated to EvalOps:
+
+```bash
+ruby .github/scripts/audit-engineering-practices.rb \
+  --json-output engineering-practices-audit.json \
+  --markdown-output engineering-practices-audit.md
+```
+
+`.github/workflows/engineering-practices-audit.yml` validates the contract on
+PRs and runs the live, non-mutating audit on schedule or manual dispatch with
+`EVALOPS_ORG_READ_TOKEN`.
 
 ### Label Taxonomy Sync
 
