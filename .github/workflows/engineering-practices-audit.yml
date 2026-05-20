@@ -1,0 +1,88 @@
+name: Engineering Practices Audit
+
+on:
+  pull_request:
+    paths:
+      - ".github/contracts/engineering-practices.yml"
+      - ".github/scripts/audit-engineering-practices.rb"
+      - ".github/workflows/engineering-practices-audit.yml"
+      - "profile/ENGINEERING_PRACTICES.md"
+      - "test/audit_engineering_practices_test.rb"
+  schedule:
+    - cron: "31 16 * * 1"
+  workflow_dispatch:
+    inputs:
+      fail_on_findings:
+        description: "Fail the run when live practice drift is found"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate engineering practices contract
+        run: |
+          set -euo pipefail
+          ruby .github/scripts/audit-engineering-practices.rb \
+            --contract-only \
+            --json-output engineering-practices-contract.json \
+            --markdown-output engineering-practices-contract.md
+          cat engineering-practices-contract.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload contract report
+        uses: actions/upload-artifact@v4
+        with:
+          name: engineering-practices-contract
+          path: |
+            engineering-practices-contract.json
+            engineering-practices-contract.md
+          if-no-files-found: error
+          retention-days: 30
+
+  live-audit:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.EVALOPS_ORG_READ_TOKEN }}
+      FAIL_ON_FINDINGS: ${{ inputs.fail_on_findings || 'false' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Require org read token
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set secrets.EVALOPS_ORG_READ_TOKEN with org-wide repo, issue, and security read access before running the live engineering practices audit."
+            exit 2
+          fi
+
+      - name: Audit live engineering practice drift
+        run: |
+          set -euo pipefail
+          args=(
+            --json-output engineering-practices-audit.json
+            --markdown-output engineering-practices-audit.md
+          )
+          if [ "${FAIL_ON_FINDINGS}" = "true" ]; then
+            args+=(--fail-on-findings)
+          fi
+          ruby .github/scripts/audit-engineering-practices.rb "${args[@]}"
+          cat engineering-practices-audit.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload live audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: engineering-practices-audit
+          path: |
+            engineering-practices-audit.json
+            engineering-practices-audit.md
+          if-no-files-found: error
+          retention-days: 30

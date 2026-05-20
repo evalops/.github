@@ -1,0 +1,558 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+require "open3"
+require "optparse"
+require "set"
+require "time"
+require "yaml"
+
+module EvalOpsEngineeringPracticesAudit
+  SCHEMA_VERSION = "evalops.engineering_practices.v1"
+  REPORT_SCHEMA_VERSION = "evalops.engineering_practices_audit.v1"
+  REQUIRED_TOP_LEVEL = %w[
+    schema_version
+    contract_id
+    owner_repo
+    workflow
+    source_records
+    repo_tiers
+    practices
+    live_audit
+  ].freeze
+  REQUIRED_PRACTICES = %w[
+    org-rulesets
+    backlog-lifecycle
+    release-train-state
+    agent-review-lane
+    security-slo
+    operating-rails
+    evidence-first-done
+  ].freeze
+  SEARCH_TOTAL_FALLBACK = {
+    "total_count" => 0,
+    "incomplete_results" => false
+  }.freeze
+
+  module_function
+
+  def load_contract(path)
+    YAML.safe_load(File.read(path), permitted_classes: [], aliases: false)
+  end
+
+  def relative_path(root, path)
+    File.expand_path(path, root)
+  end
+
+  def file_digest(root, path)
+    absolute = relative_path(root, path)
+    return nil unless File.file?(absolute)
+
+    Digest::SHA256.file(absolute).hexdigest
+  end
+
+  def repo_name(repo)
+    repo.to_s.split("/", 2).last
+  end
+
+  def check_path(root, path, errors, warnings, required: true)
+    absolute = relative_path(root, path)
+    return true if File.file?(absolute)
+
+    message = "#{path} does not exist"
+    required ? errors << message : warnings << message
+    false
+  end
+
+  def duplicates(values)
+    seen = Set.new
+    values.each_with_object(Set.new) do |value, repeated|
+      repeated << value if seen.include?(value)
+      seen << value
+    end.to_a
+  end
+
+  def validate_contract(contract, root: Dir.pwd)
+    errors = []
+    warnings = []
+    REQUIRED_TOP_LEVEL.each { |key| errors << "#{key} is required" unless contract.key?(key) }
+    errors << "schema_version must be #{SCHEMA_VERSION}" unless contract["schema_version"] == SCHEMA_VERSION
+    errors << "workflow.name is required" if contract.dig("workflow", "name").to_s.empty?
+    errors << "workflow.correctness_model is required" if contract.dig("workflow", "correctness_model").to_s.empty?
+    errors << "workflow.threat_model is required" if contract.dig("workflow", "threat_model").to_s.empty?
+
+    Array(contract["source_records"]).each do |record|
+      errors << "source_records.id is required" if record["id"].to_s.empty?
+      path = record["path"].to_s
+      errors << "#{record["id"]}: path is required" if path.empty?
+      check_path(root, path, errors, warnings) unless path.empty?
+    end
+
+    tier_controls = Set.new
+    repos_by_tier = contract.fetch("repo_tiers", {}).flat_map do |tier, data|
+      errors << "repo_tiers.#{tier}.repos must not be empty" if Array(data["repos"]).empty? && tier != "experimental"
+      Array(data["required_controls"]).each { |control| tier_controls << control.to_s }
+      Array(data["repos"]).map { |repo| [tier, repo] }
+    end
+    duplicate_repos = duplicates(repos_by_tier.map(&:last))
+    errors << "repo listed in more than one tier: #{duplicate_repos.join(", ")}" unless duplicate_repos.empty?
+
+    practices = Array(contract["practices"])
+    practice_ids = practices.map { |practice| practice["id"].to_s }
+    duplicate_practices = duplicates(practice_ids)
+    errors << "duplicate practice ids: #{duplicate_practices.join(", ")}" unless duplicate_practices.empty?
+    missing_practices = REQUIRED_PRACTICES - practice_ids
+    errors << "missing required practices: #{missing_practices.join(", ")}" unless missing_practices.empty?
+    unknown_controls = tier_controls - Set.new(practice_ids)
+    errors << "repo tier references unknown practice controls: #{unknown_controls.to_a.join(", ")}" unless unknown_controls.empty?
+
+    practices.each do |practice|
+      id = practice["id"].to_s
+      %w[title why adoption].each do |field|
+        errors << "#{id}: #{field} is required" if practice[field].to_s.strip.empty?
+      end
+      source_path = practice.dig("source", "path").to_s
+      errors << "#{id}: source.path is required" if source_path.empty?
+      check_path(root, source_path, errors, warnings) unless source_path.empty?
+      checked_by = Array(practice["checked_by"])
+      errors << "#{id}: checked_by is required" if checked_by.empty?
+      checked_by.each { |path| check_path(root, path, errors, warnings) }
+      errors << "#{id}: at least one signal is required" if Array(practice["signals"]).empty?
+    end
+
+    required_files = contract.dig("live_audit", "required_files") || {}
+    %w[critical standard].each do |tier|
+      errors << "live_audit.required_files.#{tier} is required" unless required_files.key?(tier)
+    end
+    errors << "live_audit.owner is required" if contract.dig("live_audit", "owner").to_s.empty?
+    errors << "live_audit.sampled_repos must not be empty" if Array(contract.dig("live_audit", "sampled_repos")).empty?
+
+    {
+      "status" => errors.empty? ? "pass" : "fail",
+      "errors" => errors,
+      "warnings" => warnings
+    }
+  end
+
+  def evidence(contract, root)
+    Array(contract["source_records"]).map do |record|
+      {
+        "source_id" => record["id"],
+        "path" => record["path"],
+        "sha256" => file_digest(root, record["path"])
+      }
+    end
+  end
+
+  def gh_runner
+    lambda do |args|
+      stdout, stderr, status = Open3.capture3("gh", *args)
+      [stdout, stderr, status.success?]
+    end
+  end
+
+  def parse_json(stdout)
+    JSON.parse(stdout)
+  rescue JSON::ParserError
+    nil
+  end
+
+  def run_gh(args, runner, warnings, fallback)
+    stdout, stderr, success = runner.call(args)
+    unless success
+      warnings << "gh #{args.join(" ")} failed: #{stderr.to_s.strip}"
+      return fallback
+    end
+    parsed = parse_json(stdout)
+    return parsed unless parsed.nil?
+
+    warnings << "gh #{args.join(" ")} returned non-JSON output"
+    fallback
+  end
+
+  def search_count(query, runner, warnings)
+    payload = run_gh(
+      ["api", "-X", "GET", "/search/issues", "-f", "q=#{query}", "-f", "per_page=1"],
+      runner,
+      warnings,
+      SEARCH_TOTAL_FALLBACK
+    )
+    payload.fetch("total_count", 0)
+  end
+
+  def org_rulesets(owner, runner, warnings)
+    payload = run_gh(
+      ["api", "-X", "GET", "/orgs/#{owner}/rulesets"],
+      runner,
+      warnings,
+      []
+    )
+    Array(payload).map do |ruleset|
+      {
+        "id" => ruleset["id"],
+        "name" => ruleset["name"],
+        "target" => ruleset["target"],
+        "enforcement" => ruleset["enforcement"]
+      }
+    end
+  end
+
+  def branch_protection(repo, runner, warnings)
+    payload = run_gh(
+      ["api", "-X", "GET", "/repos/#{repo}/branches/main/protection"],
+      runner,
+      warnings,
+      {}
+    )
+    contexts = Array(payload.dig("required_status_checks", "contexts")) +
+      Array(payload.dig("required_status_checks", "checks")).map { |check| check["context"] }.compact
+    {
+      "repo" => repo,
+      "has_protection" => !payload.empty?,
+      "required_status_checks" => contexts.uniq.sort,
+      "requires_reviews" => payload.key?("required_pull_request_reviews"),
+      "enforce_admins" => payload.dig("enforce_admins", "enabled") == true
+    }
+  end
+
+  def file_exists?(repo, path, runner)
+    _stdout, _stderr, success = runner.call(["api", "-X", "GET", "/repos/#{repo}/contents/#{path}"])
+    success
+  end
+
+  def repo_file_adoption(repos, required_by_tier, tiers, runner, owner_repo:, root:)
+    repos.map do |repo|
+      tier = tiers.fetch(repo, "unknown")
+      required = Array(required_by_tier[tier])
+      checks = required.to_h do |path|
+        present = if repo == owner_repo
+                    File.file?(relative_path(root, path))
+                  else
+                    file_exists?(repo, path, runner)
+                  end
+        [path, present]
+      end
+      {
+        "repo" => repo,
+        "tier" => tier,
+        "required_files" => checks,
+        "missing_required_files" => checks.select { |_path, present| !present }.keys
+      }
+    end
+  end
+
+  def dependabot_alerts(owner, runner, warnings)
+    stdout, stderr, success = runner.call(
+      ["api", "--paginate", "-X", "GET", "/orgs/#{owner}/dependabot/alerts", "-f", "state=open", "-f", "per_page=100", "--jq", ".[]"]
+    )
+    unless success
+      warnings << "dependabot alert fetch failed: #{stderr.to_s.strip}"
+      return { "total" => 0, "by_severity" => {}, "by_repo" => {} }
+    end
+    alerts = stdout.lines.map { |line| parse_json(line) }.compact
+    if alerts.empty?
+      parsed = parse_json(stdout)
+      alerts = parsed if parsed.is_a?(Array)
+    end
+    alerts = Array(alerts)
+    {
+      "total" => alerts.length,
+      "by_severity" => alerts.group_by { |alert| alert.dig("security_vulnerability", "severity").to_s }.transform_values(&:length),
+      "by_repo" => alerts.group_by { |alert| alert.dig("repository", "full_name").to_s }.transform_values(&:length)
+    }
+  end
+
+  def alert_count(owner, kind, runner, warnings)
+    stdout, stderr, success = runner.call(
+      ["api", "--paginate", "-X", "GET", "/orgs/#{owner}/#{kind}/alerts", "-f", "state=open", "-f", "per_page=100", "--jq", ".[]"]
+    )
+    unless success
+      warnings << "#{kind} alert fetch failed: #{stderr.to_s.strip}"
+      return 0
+    end
+    lines = stdout.lines.reject { |line| line.strip.empty? }
+    return lines.length if lines.all? { |line| parse_json(line).is_a?(Hash) }
+
+    parsed = parse_json(stdout)
+    parsed.is_a?(Array) ? parsed.length : 0
+  end
+
+  def issue_list(repo, runner, warnings)
+    payload = run_gh(
+      ["issue", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,title,updatedAt"],
+      runner,
+      warnings,
+      []
+    )
+    Array(payload)
+  end
+
+  def stale_closing_comment?(repo, number, runner)
+    stdout, _stderr, success = runner.call(
+      ["issue", "view", number.to_s, "--repo", repo, "--json", "comments", "--jq", ".comments[-1].body // \"\""]
+    )
+    return false unless success
+
+    stdout.include?("Closing because")
+  end
+
+  def backlog_hygiene(repo, runner, warnings)
+    issues = issue_list(repo, runner, warnings).select do |issue|
+      issue["title"].to_s.start_with?("[codex] Guardrail backlog:")
+    end
+    stale = issues.select { |issue| stale_closing_comment?(repo, issue["number"], runner) }
+    {
+      "repo" => repo,
+      "open_guardrail_backlog_issues" => issues.map { |issue| issue.slice("number", "title", "updatedAt") },
+      "stale_closing_comments" => stale.map { |issue| issue.slice("number", "title", "updatedAt") }
+    }
+  end
+
+  def build_findings(report)
+    findings = []
+    rulesets = report.dig("live", "org_rulesets") || []
+    if rulesets.empty?
+      findings << {
+        "practice" => "org-rulesets",
+        "severity" => "high",
+        "message" => "No EvalOps org rulesets are configured; repo-local branch protection is carrying all merge policy."
+      }
+    end
+
+    Array(report.dig("live", "branch_protection")).each do |item|
+      next unless item["tier"] == "critical"
+      next unless item["required_status_checks"].empty?
+
+      findings << {
+        "practice" => "org-rulesets",
+        "severity" => "medium",
+        "repo" => item["repo"],
+        "message" => "Critical repo has no required status checks in branch protection."
+      }
+    end
+
+    Array(report.dig("live", "repo_rails")).each do |item|
+      missing = Array(item["missing_required_files"])
+      next if missing.empty?
+
+      findings << {
+        "practice" => "operating-rails",
+        "severity" => item["tier"] == "critical" ? "high" : "medium",
+        "repo" => item["repo"],
+        "message" => "Missing required rails: #{missing.join(", ")}"
+      }
+    end
+
+    stale = Array(report.dig("live", "backlog_hygiene", "stale_closing_comments"))
+    unless stale.empty?
+      findings << {
+        "practice" => "backlog-lifecycle",
+        "severity" => "medium",
+        "message" => "#{stale.length} guardrail backlog issue(s) have closing comments but remain open.",
+        "issues" => stale
+      }
+    end
+
+    security = report.dig("live", "security_alerts") || {}
+    critical = security.dig("dependabot", "by_severity", "critical").to_i
+    high = security.dig("dependabot", "by_severity", "high").to_i
+    if critical.positive? || high.positive?
+      findings << {
+        "practice" => "security-slo",
+        "severity" => critical.positive? ? "high" : "medium",
+        "message" => "Open Dependabot alerts exceed zero for critical/high severities.",
+        "critical" => critical,
+        "high" => high
+      }
+    end
+
+    Array(report.dig("live", "release_train_queries")).each do |query|
+      next unless query["total_count"].to_i.positive?
+
+      findings << {
+        "practice" => "release-train-state",
+        "severity" => "medium",
+        "message" => "#{query["key"]} matched #{query["total_count"]} merged PR(s) in the audit window."
+      }
+    end
+
+    findings
+  end
+
+  def live_audit(contract, runner: gh_runner, root: Dir.pwd, generated_at: Time.now.utc)
+    warnings = []
+    owner = contract.dig("live_audit", "owner")
+    sampled_repos = Array(contract.dig("live_audit", "sampled_repos"))
+    tiers = contract.fetch("repo_tiers", {}).each_with_object({}) do |(tier, data), memo|
+      Array(data["repos"]).each { |repo| memo[repo] = tier }
+    end
+    required_files = contract.dig("live_audit", "required_files") || {}
+
+    branch = sampled_repos.map do |repo|
+      branch_protection(repo, runner, warnings).merge("tier" => tiers.fetch(repo, "unknown"))
+    end
+    issue_queries = (contract.dig("live_audit", "issue_queries") || {}).map do |key, query|
+      { "key" => key, "query" => query, "total_count" => search_count(query, runner, warnings) }
+    end
+    release_queries = (contract.dig("live_audit", "release_train_queries") || {}).map do |key, query|
+      { "key" => key, "query" => query, "total_count" => search_count(query, runner, warnings) }
+    end
+    backlog = backlog_hygiene(contract.fetch("owner_repo"), runner, warnings)
+    live = {
+      "owner" => owner,
+      "org_rulesets" => org_rulesets(owner, runner, warnings),
+      "branch_protection" => branch,
+      "repo_rails" => repo_file_adoption(
+        sampled_repos,
+        required_files,
+        tiers,
+        runner,
+        owner_repo: contract.fetch("owner_repo"),
+        root: root
+      ),
+      "issue_queries" => issue_queries,
+      "release_train_queries" => release_queries,
+      "backlog_hygiene" => backlog,
+      "security_alerts" => {
+        "dependabot" => dependabot_alerts(owner, runner, warnings),
+        "secret_scanning_open" => alert_count(owner, "secret-scanning", runner, warnings),
+        "excluded_scanners" => Array(contract.dig("live_audit", "security_alert_slo", "excluded_scanners"))
+      }
+    }
+
+    static = validate_contract(contract, root: root)
+    report = {
+      "schema_version" => REPORT_SCHEMA_VERSION,
+      "contract_schema_version" => contract["schema_version"],
+      "contract_id" => contract["contract_id"],
+      "owner_repo" => contract["owner_repo"],
+      "generated_at" => generated_at.utc.iso8601,
+      "status" => static.fetch("status"),
+      "static_validation" => static,
+      "evidence" => evidence(contract, root),
+      "live" => live,
+      "warnings" => warnings
+    }
+    findings = build_findings(report)
+    report["findings"] = findings
+    report["status"] = "attention" if report["status"] == "pass" && findings.any?
+    report
+  end
+
+  def markdown_report(report)
+    lines = [
+      "# Engineering Practices Audit",
+      "",
+      "- Contract: `#{report["contract_id"]}`",
+      "- Owner: `#{report["owner_repo"]}`",
+      "- Generated at: `#{report["generated_at"]}`",
+      "- Status: `#{report["status"]}`",
+      "",
+      "## Findings"
+    ]
+    findings = Array(report["findings"])
+    if findings.empty?
+      lines << "No practice drift findings."
+    else
+      findings.each do |finding|
+        prefix = finding["repo"] ? "`#{finding["repo"]}` " : ""
+        lines << "- `#{finding["severity"]}` `#{finding["practice"]}` #{prefix}#{finding["message"]}"
+      end
+    end
+
+    lines << ""
+    lines << "## Live Signals"
+    rulesets = Array(report.dig("live", "org_rulesets"))
+    lines << "- Org rulesets: `#{rulesets.length}`"
+    security = report.dig("live", "security_alerts") || {}
+    lines << "- Dependabot open alerts: `#{security.dig("dependabot", "total") || 0}`"
+    lines << "- Secret scanning open alerts: `#{security["secret_scanning_open"] || 0}`"
+    unless Array(security["excluded_scanners"]).empty?
+      lines << "- Excluded scanners: `#{security["excluded_scanners"].join(", ")}`"
+    end
+    Array(report.dig("live", "issue_queries")).each do |query|
+      lines << "- #{query["key"]}: `#{query["total_count"]}`"
+    end
+    Array(report.dig("live", "release_train_queries")).each do |query|
+      lines << "- #{query["key"]}: `#{query["total_count"]}`"
+    end
+
+    lines << ""
+    lines << "## Missing Repo Rails"
+    missing = Array(report.dig("live", "repo_rails")).select { |item| Array(item["missing_required_files"]).any? }
+    if missing.empty?
+      lines << "No sampled repo rail gaps."
+    else
+      missing.each do |item|
+        lines << "- `#{item["repo"]}` (#{item["tier"]}): #{item["missing_required_files"].join(", ")}"
+      end
+    end
+
+    unless Array(report["warnings"]).empty?
+      lines << ""
+      lines << "## Warnings"
+      report["warnings"].each { |warning| lines << "- #{warning}" }
+    end
+
+    lines.join("\n")
+  end
+
+  def write_report(report, json_output, markdown_output, root)
+    json = JSON.pretty_generate(report)
+    if json_output
+      File.write(relative_path(root, json_output), "#{json}\n")
+    else
+      puts json
+    end
+    File.write(relative_path(root, markdown_output), "#{markdown_report(report)}\n") if markdown_output
+  end
+
+  def run(argv)
+    options = {
+      contract: ".github/contracts/engineering-practices.yml",
+      json_output: nil,
+      markdown_output: nil,
+      contract_only: false,
+      fail_on_findings: false
+    }
+    OptionParser.new do |parser|
+      parser.on("--contract PATH", "Contract YAML path") { |value| options[:contract] = value }
+      parser.on("--json-output PATH", "Write JSON report") { |value| options[:json_output] = value }
+      parser.on("--markdown-output PATH", "Write Markdown report") { |value| options[:markdown_output] = value }
+      parser.on("--contract-only", "Validate the static contract without GitHub API calls") { options[:contract_only] = true }
+      parser.on("--fail-on-findings", "Exit non-zero when live practice drift is found") { options[:fail_on_findings] = true }
+    end.parse!(argv)
+
+    root = Dir.pwd
+    contract = load_contract(relative_path(root, options.fetch(:contract)))
+    report = if options[:contract_only]
+               static = validate_contract(contract, root: root)
+               {
+                 "schema_version" => REPORT_SCHEMA_VERSION,
+                 "contract_schema_version" => contract["schema_version"],
+                 "contract_id" => contract["contract_id"],
+                 "owner_repo" => contract["owner_repo"],
+                 "generated_at" => Time.now.utc.iso8601,
+                 "status" => static.fetch("status"),
+                 "static_validation" => static,
+                 "evidence" => evidence(contract, root),
+                 "findings" => [],
+                 "warnings" => static.fetch("warnings")
+               }
+             else
+               live_audit(contract, root: root)
+             end
+
+    write_report(report, options[:json_output], options[:markdown_output], root)
+    return 1 if report["static_validation"].fetch("status") == "fail"
+    return 1 if options[:fail_on_findings] && Array(report["findings"]).any?
+
+    0
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  exit EvalOpsEngineeringPracticesAudit.run(ARGV)
+end

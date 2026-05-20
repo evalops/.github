@@ -1,0 +1,8 @@
+# EvalOps org-default changes are broad by definition.
+* @haasonsaas
+
+# Workflow, contract, and helper-script changes deserve extra operator attention.
+.github/contracts/ @haasonsaas
+.github/scripts/ @haasonsaas
+.github/workflows/ @haasonsaas
+services.yaml @haasonsaas

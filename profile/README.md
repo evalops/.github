@@ -6,6 +6,7 @@ The organizational operating system for AI agent workforces — evaluation, gove
 
 - [Agent authorship attribution](AGENT_AUTHORSHIP.md) — git trailers, PR labels, and audit indexing for Maestro-authored code.
 - [GitHub Actions quota hygiene](GITHUB_ACTIONS_QUOTA.md) — CodeQL scoping, artifact retention, and quota-safe diagnostics.
+- [Engineering practices](ENGINEERING_PRACTICES.md) — tiered merge policy, backlog lifecycle, release trains, security SLOs, and evidence-first completion.
 
 ## Platform Services
 
