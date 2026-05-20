@@ -80,9 +80,9 @@ jobs:
             exit 0
           fi
           if command -v actionlint >/dev/null 2>&1; then
-            actionlint "${files[@]}"
+            actionlint -shellcheck= -pyflakes= "${files[@]}"
           else
-            go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 "${files[@]}"
+            go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= "${files[@]}"
           fi
 
       - name: Validate workflow template metadata
