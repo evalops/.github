@@ -11,7 +11,10 @@ on:
         default: "true"
 
 permissions:
-  contents: read
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: read
 
 concurrency:
   group: evalopsbot-review-canary
@@ -22,36 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       CANARY_BRANCH: evalopsbot-review-canary
       CANARY_REPO: evalops/.github
       CLEANUP: ${{ github.event_name == 'workflow_dispatch' && inputs.cleanup || 'true' }}
-      PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-
-      - name: Configure GitHub App token
-        shell: bash
-        env:
-          APP_ID: ${{ secrets.EVALOPS_PR_LENS_APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.EVALOPS_PR_LENS_APP_PRIVATE_KEY }}
-          APP_INSTALLATION_ID: ${{ secrets.EVALOPS_PR_LENS_APP_INSTALLATION_ID }}
-        run: |
-          set -euo pipefail
-          if [ -n "${APP_ID}" ] && [ -n "${APP_PRIVATE_KEY}" ]; then
-            token="$(
-              EVALOPS_PR_LENS_APP_ID="${APP_ID}" \
-              EVALOPS_PR_LENS_APP_PRIVATE_KEY="${APP_PRIVATE_KEY}" \
-              EVALOPS_PR_LENS_APP_INSTALLATION_ID="${APP_INSTALLATION_ID}" \
-              ruby .github/scripts/evalops-pr-lens-review.rb mint-app-token \
-                --owner evalops \
-                --repositories "${PR_LENS_APP_REPOSITORIES}"
-            )"
-            echo "::add-mask::${token}"
-            echo "GH_TOKEN=${token}" >> "${GITHUB_ENV}"
-          fi
 
       - name: Create canary review request
         id: canary
