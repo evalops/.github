@@ -51,6 +51,8 @@ jobs:
       GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN || secrets.EVALOPS_ORG_READ_TOKEN }}
       TARGET_REPOS: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_repos || github.event.client_payload.target_repo) || inputs.target_repos || 'evalops/platform,evalops/deploy,evalops/maestro-internal' }}
       TARGET_PRS: ${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.target_prs || github.event.client_payload.target_pr) || inputs.target_prs || '' }}
+      FORCE_EXPLICIT_REVIEW_LENSES: ${{ github.event_name == 'repository_dispatch' && 'true' || 'false' }}
+      EXPLICIT_REVIEW_LENSES: migration-safety,nats-contract-drift,argo-manifest-skew,iam-blast-radius,generated-sdk-delta,eval-regression-risk
       PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -90,12 +92,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ruby .github/scripts/evalops-pr-lens-review.rb discover \
-            --repos "${TARGET_REPOS}" \
-            --target-prs "${TARGET_PRS}" \
-            --github-output "${GITHUB_OUTPUT}" \
-            --matrix-output pr-lens-matrix.json \
+          args=(
+            discover
+            --repos "${TARGET_REPOS}"
+            --target-prs "${TARGET_PRS}"
+            --github-output "${GITHUB_OUTPUT}"
+            --matrix-output pr-lens-matrix.json
             --targets-output pr-lens-targets.json
+          )
+          if [ "${FORCE_EXPLICIT_REVIEW_LENSES}" = "true" ] && [ -n "${TARGET_PRS}" ]; then
+            args+=(--force-lenses "${EXPLICIT_REVIEW_LENSES}")
+          fi
+          ruby .github/scripts/evalops-pr-lens-review.rb "${args[@]}"
 
       - name: Upload discovery ledger
         uses: actions/upload-artifact@v4
