@@ -90,6 +90,37 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_empty EvalOpsPrLensReview.lenses_for_paths(["README.md", "docs/runbook.md"])
   end
 
+  def test_discover_open_prs_can_force_lenses_for_explicit_review_requests
+    pr = {
+      "number" => 103,
+      "title" => "Canary",
+      "html_url" => "https://github.com/evalops/.github/pull/103",
+      "draft" => false,
+      "head" => { "sha" => "head", "ref" => "evalopsbot-review-canary" },
+      "base" => { "sha" => "base", "ref" => "main" }
+    }
+    api = lambda do |path, **_kwargs|
+      case path
+      when "repos/evalops/.github/pulls?state=open&per_page=100"
+        [pr]
+      when "repos/evalops/.github/pulls/103/files?per_page=100"
+        [{ "filename" => ".github/evalopsbot-canary/review-request.md" }]
+      else
+        flunk "unexpected gh api path #{path}"
+      end
+    end
+
+    EvalOpsPrLensReview.stub(:gh_api_json, api) do
+      prs = EvalOpsPrLensReview.discover_open_prs(
+        repos: ["evalops/.github"],
+        pr_filter: { "evalops/.github" => [103] },
+        force_lenses: %w[migration-safety iam-blast-radius]
+      )
+
+      assert_equal %w[migration-safety iam-blast-radius], prs.fetch(0).fetch("lenses")
+    end
+  end
+
   def test_normalize_lens_review_drops_invalid_findings
     raw = {
       "summary" => "Found one issue",

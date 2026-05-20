@@ -424,7 +424,7 @@ module EvalOpsPrLensReview
     gh_api_json("repos/#{repo}/pulls/#{pr}/files?per_page=100")
   end
 
-  def discover_open_prs(repos:, pr_filter: nil)
+  def discover_open_prs(repos:, pr_filter: nil, force_lenses: nil)
     repos.flat_map do |repo|
       normalized_repo = normalize_repo(repo)
       prs = gh_api_json("repos/#{normalized_repo}/pulls?state=open&per_page=100")
@@ -432,7 +432,7 @@ module EvalOpsPrLensReview
       prs.map do |pr|
         files = pr_files_metadata(repo: normalized_repo, pr: Integer(pr.fetch("number")))
         filenames = files.map { |file| file.fetch("filename") }
-        lenses = lenses_for_paths(filenames)
+        lenses = force_lenses || lenses_for_paths(filenames)
         {
           "repo" => normalized_repo,
           "repo_slug" => normalized_repo.tr("/", "-"),
@@ -1359,13 +1359,18 @@ if $PROGRAM_NAME == __FILE__
     OptionParser.new do |parser|
       parser.on("--repos CSV") { |value| options[:repos] = EvalOpsPrLensReview.parse_list(value) }
       parser.on("--target-prs CSV") { |value| options[:target_prs] = value }
+      parser.on("--force-lenses CSV") { |value| options[:force_lenses] = EvalOpsPrLensReview.parse_list(value) }
       parser.on("--github-output PATH") { |value| options[:github_output] = value }
       parser.on("--matrix-output PATH") { |value| options[:matrix_output] = value }
       parser.on("--targets-output PATH") { |value| options[:targets_output] = value }
     end.parse!
 
     pr_filter = EvalOpsPrLensReview.parse_pr_filter(options[:target_prs], repos: options[:repos]) if options[:target_prs]
-    prs = EvalOpsPrLensReview.discover_open_prs(repos: options[:repos], pr_filter: pr_filter)
+    prs = EvalOpsPrLensReview.discover_open_prs(
+      repos: options[:repos],
+      pr_filter: pr_filter,
+      force_lenses: options[:force_lenses]
+    )
     matrix = EvalOpsPrLensReview.matrix_for(prs, lenses: options[:lenses])
     matrix_json = JSON.generate({ include: matrix })
 
