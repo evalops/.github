@@ -40,7 +40,9 @@ passing coverage, lint, or drift check into a failed required status.
 
 ## Runner Budget
 
-Prefer Blacksmith runners for normal CI unless a vendor workflow requires
-GitHub-hosted OIDC or trusted publishing. When a job stays on `ubuntu-latest`,
+Prefer owned EvalOps runners for trusted CI: `evalops-private-ci` for short
+private-repo checks and `evalops-internal` for deploy, release, GKE, or
+production-confirmation work. Keep public/fork, Dependabot, or vendor OIDC
+work on `ubuntu-latest` until a separate public-safe owned pool exists, and
 leave a comment explaining the dependency so later runner migrations do not
 re-introduce quota or authentication failures.

@@ -26,7 +26,7 @@ This policy applies to all repositories in the [evalops](https://github.com/eval
 ## Code Scanning
 
 EvalOps does not use GitHub CodeQL or GitHub default code scanning. Every
-repository is attached to the **EvalOps Blacksmith recommended** code security
+repository is attached to the **EvalOps security baseline recommended** code security
 configuration (`id=245233`), which sets `advanced_security:
 secret_protection` and `code_scanning_default_setup: disabled`, and is the
 default for new repositories.
