@@ -85,6 +85,26 @@ jobs:
             go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= "${files[@]}"
           fi
 
+      - name: Reject prohibited code scanning actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/workflows/*.yml .github/workflows/*.yaml .github/workflow-templates/*.yml .github/workflow-templates/*.yaml)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No workflow YAML files found."
+            exit 0
+          fi
+          blocked_owner="github"
+          blocked_prefix="code"
+          blocked_suffix="ql-action"
+          blocked="${blocked_owner}/${blocked_prefix}${blocked_suffix}"
+          if grep -RInE "^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*${blocked}([/@[:space:]]|$)" "${files[@]}"; then
+            echo "::error::EvalOps does not use GitHub default code scanning. Remove this workflow action and use bounded repo-owned checks instead."
+            exit 1
+          fi
+          echo "ok: no prohibited GitHub default code-scanning action references"
+
       - name: Validate workflow template metadata
         shell: bash
         run: |
