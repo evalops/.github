@@ -12,7 +12,7 @@ on:
         description: "Runner label used for Pysa"
         required: false
         type: string
-        default: blacksmith-4vcpu-ubuntu-2404
+        default: ubuntu-latest
       working_directory:
         description: "Repository-relative directory to analyze"
         required: false

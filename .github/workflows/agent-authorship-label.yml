@@ -12,7 +12,7 @@ on:
         description: "Runner label used for the label job"
         required: false
         type: string
-        default: blacksmith-4vcpu-ubuntu-2404
+        default: ubuntu-latest
       helper_ref:
         description: "evalops/.github ref used to checkout helper scripts"
         required: false
