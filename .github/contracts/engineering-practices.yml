@@ -200,6 +200,20 @@ live_audit:
     excluded_scanners:
       - codeql
       - github-code-scanning-default-setup
+  no_codeql:
+    security_configuration_id: 245233
+    required_settings:
+      advanced_security: secret_protection
+      code_scanning_default_setup: disabled
+      dependency_graph_autosubmit_action: disabled
+    forbidden_required_check_patterns:
+      - codeql
+      - code scanning
+      - code-scanning
+      - github/codeql-action
+    forbidden_workflow_queries:
+      codeql_action_workflows: 'github/codeql-action org:evalops path:.github/workflows'
+      codeql_named_workflows: 'codeql org:evalops path:.github/workflows'
 commands:
   local_contract_check: "ruby .github/scripts/audit-engineering-practices.rb --contract-only"
   live_report: "ruby .github/scripts/audit-engineering-practices.rb --json-output engineering-practices-audit.json --markdown-output engineering-practices-audit.md"
