@@ -85,7 +85,7 @@ requirements:
       - .github/workflows/codex-rails-check.yml
 github_security_configuration:
   id: 245233
-  name: EvalOps Blacksmith recommended
+  name: EvalOps security baseline recommended
   default_for_new_repos: all
   required_settings:
     advanced_security: secret_protection
