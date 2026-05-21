@@ -3,42 +3,23 @@
 EvalOps repositories should keep CI evidence useful without letting GitHub
 Actions minute or artifact quotas block unrelated pull requests.
 
-## CodeQL
+## Blanket Static Analysis
 
-Run CodeQL on `main`, on a weekly schedule, and through manual dispatch. For
-pull requests, scope CodeQL with `paths` so documentation, GitOps metadata, and
-workflow-only changes do not spend full multi-language analysis capacity.
+Do not add CodeQL or GitHub default code-scanning workflows. EvalOps does not
+use them, and they should not become required checks, scheduled jobs, or
+generated default-setup runs.
 
-Recommended PR path set:
+Security checks need an owner and a runtime budget before they belong in CI.
+Prefer narrow repository-owned checks that answer a concrete question:
 
-```yaml
-on:
-  pull_request:
-    paths:
-      - ".github/workflows/codeql.yml"
-      - "go.mod"
-      - "go.sum"
-      - "**/*.go"
-      - "package.json"
-      - "package-lock.json"
-      - "pnpm-lock.yaml"
-      - "yarn.lock"
-      - "bun.lock"
-      - "bun.lockb"
-      - "**/*.js"
-      - "**/*.jsx"
-      - "**/*.mjs"
-      - "**/*.cjs"
-      - "**/*.ts"
-      - "**/*.tsx"
-      - "pyproject.toml"
-      - "poetry.lock"
-      - "requirements*.txt"
-      - "**/*.py"
-```
+- Semgrep custom rules for known repo-local failure modes.
+- Contract, migration, schema, and architecture checks with small inputs.
+- Secret scanning and Dependabot alerts handled through the security SLO.
+- One-shot diagnostic scripts that are not required merge gates unless the
+  signal is high-yield and fast.
 
-Keep the checked-in CodeQL workflow explicit. Do not rely on generated CodeQL
-runs when runner placement, matrix languages, or branch behavior matter.
+When a scanner is slow, noisy, or ownerless, remove it instead of tuning the
+required status list around it.
 
 ## Artifacts
 

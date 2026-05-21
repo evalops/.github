@@ -25,21 +25,20 @@ This policy applies to all repositories in the [evalops](https://github.com/eval
 
 ## Code Scanning
 
-EvalOps does not enable GitHub CodeQL. Every repository is attached to the
-**EvalOps Blacksmith recommended** code security configuration
-(`id=245233`), which sets `code_scanning_default_setup: disabled` and is the
-default for new repositories.
+EvalOps does not use GitHub CodeQL or GitHub default code scanning. Every
+repository is attached to the **EvalOps Blacksmith recommended** code security
+configuration (`id=245233`), which sets `code_scanning_default_setup:
+disabled` and is the default for new repositories.
 
-Equivalent static analysis lives elsewhere:
+Security signal should come from bounded, owned checks:
 
 - `semgrep`-based custom rules in service repos (see `.semgrep/` directories
   and the `semgrep-custom` workflows).
 - Service-specific gates such as `architecture-review`, `contract-skew-check`,
   and `migration-check` in `evalops/platform`.
-- The [`codeql-guard`](.github/workflows/codeql-guard.yml) workflow in this
-  repo enforces the policy: it rejects PRs that introduce
-  `github/codeql-action` here, and it sweeps every `evalops/*` repo daily,
-  opening an issue if a CodeQL workflow file appears anywhere in the org.
+- Secret scanning, Dependabot, and targeted repository-owned analyzers with
+  explicit owners and runtime budgets.
 
-To request a policy change, open a PR against this file and the guard
-workflow.
+Do not add CodeQL workflows, generated default-setup workflows, or required
+checks backed by blanket code scanning. To request a policy change, open a PR
+against this file and the engineering-practices contract.
