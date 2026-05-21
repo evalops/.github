@@ -33,14 +33,14 @@ on:
         description: "Runner label used for the validation job"
         required: false
         type: string
-        default: blacksmith-4vcpu-ubuntu-2404
+        default: evalops-private-ci
 
 permissions:
   contents: read
 
 jobs:
   validate:
-    runs-on: ${{ inputs.runner_label || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.runner_label || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || (vars.PR_VALIDATION_RUNNER || 'evalops-private-ci')) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
