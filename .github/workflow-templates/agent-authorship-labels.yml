@@ -13,4 +13,4 @@ jobs:
   label:
     uses: evalops/.github/.github/workflows/agent-authorship-label.yml@main
     with:
-      runner_label: evalops-private-ci
+      runner_label: ubuntu-latest

@@ -12,7 +12,7 @@ on:
         description: "Runner label used for Pysa"
         required: false
         type: string
-        default: evalops-private-ci
+        default: ubuntu-latest
       working_directory:
         description: "Repository-relative directory to analyze"
         required: false

@@ -23,7 +23,7 @@ jobs:
   guard-self:
     name: Forbid CodeQL in evalops/.github
     if: ${{ github.event_name != 'schedule' }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || (vars.PR_VALIDATION_RUNNER || 'evalops-private-ci') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -52,7 +52,7 @@ jobs:
   guard-org:
     name: Sweep evalops/* for CodeQL workflow drift
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ${{ vars.PR_VALIDATION_RUNNER || 'evalops-private-ci' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
