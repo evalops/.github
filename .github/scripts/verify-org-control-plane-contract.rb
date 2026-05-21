@@ -107,6 +107,39 @@ module EvalOpsOrgControlPlaneContract
     end
   end
 
+  def check_github_security_configuration(contract, errors)
+    config = contract["github_security_configuration"] || {}
+    errors << "github_security_configuration is required" if config.empty?
+
+    errors << "github_security_configuration.id must be 245233" unless config["id"] == 245_233
+    errors << "github_security_configuration.default_for_new_repos must be all" unless config["default_for_new_repos"] == "all"
+
+    required = config["required_settings"] || {}
+    {
+      "advanced_security" => "secret_protection",
+      "code_scanning_default_setup" => "disabled",
+      "dependency_graph" => "enabled",
+      "dependency_graph_autosubmit_action" => "disabled",
+      "dependabot_alerts" => "enabled",
+      "secret_scanning" => "enabled",
+      "secret_scanning_push_protection" => "enabled"
+    }.each do |key, expected|
+      errors << "github_security_configuration.required_settings.#{key} must be #{expected}" unless required[key] == expected
+    end
+
+    forbidden = config["forbidden_workflows"] || {}
+    actions = Array(forbidden["actions"])
+    generated_paths = Array(forbidden["generated_paths"])
+    checked_in_globs = Array(forbidden["checked_in_path_globs"])
+    errors << "github_security_configuration.forbidden_workflows.actions must include github/codeql-action" unless actions.include?("github/codeql-action")
+    unless generated_paths.include?("dynamic/github-code-scanning/codeql")
+      errors << "github_security_configuration.forbidden_workflows.generated_paths must include dynamic/github-code-scanning/codeql"
+    end
+    unless checked_in_globs.any? { |glob| glob.include?("codeql") }
+      errors << "github_security_configuration.forbidden_workflows.checked_in_path_globs must include a codeql glob"
+    end
+  end
+
   def check_golden_workflows(contract, root, errors, warnings)
     workflows = Array(contract["golden_workflows"])
     errors << "at least one golden_workflow is required" if workflows.empty?
@@ -164,6 +197,7 @@ module EvalOpsOrgControlPlaneContract
     check_requirements(contract, root, errors, warnings)
     check_provenance(contract, root, errors, warnings)
     check_slo_gates(contract, errors)
+    check_github_security_configuration(contract, errors)
     check_golden_workflows(contract, root, errors, warnings)
     check_adversarial_fixtures(contract, root, errors, warnings)
 
@@ -180,6 +214,7 @@ module EvalOpsOrgControlPlaneContract
         "derived_decisions" => Array(contract.dig("provenance", "derived_decisions")).length,
         "emitted_outputs" => Array(contract.dig("provenance", "emitted_outputs")).length,
         "slo_gates" => Array(contract["slo_gates"]).length,
+        "github_security_configuration" => contract["github_security_configuration"] ? 1 : 0,
         "golden_workflows" => Array(contract["golden_workflows"]).length,
         "adversarial_fixtures" => Array(contract["adversarial_fixtures"]).length
       },

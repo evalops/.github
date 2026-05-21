@@ -71,6 +71,38 @@ requirements:
     checked_by:
       - .github/scripts/validate-services-catalog.rb
       - test/validate_services_catalog_test.rb
+  - id: no-codeql-org-defaults
+    title: GitHub CodeQL and default code scanning stay disabled
+    source:
+      path: SECURITY.md
+      lines: 26-44
+    evidence_fields:
+      - source_id
+      - decision_id
+      - output_id
+    checked_by:
+      - .github/scripts/verify-org-control-plane-contract.rb
+      - .github/workflows/codex-rails-check.yml
+github_security_configuration:
+  id: 245233
+  name: EvalOps Blacksmith recommended
+  default_for_new_repos: all
+  required_settings:
+    advanced_security: secret_protection
+    code_scanning_default_setup: disabled
+    dependency_graph: enabled
+    dependency_graph_autosubmit_action: disabled
+    dependabot_alerts: enabled
+    secret_scanning: enabled
+    secret_scanning_push_protection: enabled
+  forbidden_workflows:
+    checked_in_path_globs:
+      - .github/workflows/*codeql*
+      - .github/workflow-templates/*codeql*
+    generated_paths:
+      - dynamic/github-code-scanning/codeql
+    actions:
+      - github/codeql-action
 provenance:
   stable_id_pattern: "evalops.github.<workflow>.<source|decision|output>.<sha256-12>"
   source_records:
@@ -82,6 +114,9 @@ provenance:
       digest: sha256
     - id: evalops.github.org-defaults.source.service-catalog
       path: services.yaml
+      digest: sha256
+    - id: evalops.github.org-defaults.source.security-policy
+      path: SECURITY.md
       digest: sha256
   derived_decisions:
     - id: evalops.github.org-defaults.decision.codex-rails

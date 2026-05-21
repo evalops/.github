@@ -18,6 +18,7 @@ class VerifyOrgControlPlaneContractTest < Minitest::Test
     assert_equal "pass", report.fetch("status")
     assert_equal "evalops.github.org-defaults", report.fetch("contract_id")
     assert_operator report.dig("metrics", "requirements_checked"), :>=, 4
+    assert_equal 1, report.dig("metrics", "github_security_configuration")
     assert_operator report.dig("metrics", "adversarial_fixtures"), :>=, 3
     assert report.fetch("evidence").all? { |item| item.fetch("sha256").match?(/\A[0-9a-f]{64}\z/) }
 
@@ -50,6 +51,19 @@ class VerifyOrgControlPlaneContractTest < Minitest::Test
       assert_equal "fail", report.fetch("status")
       assert report.fetch("errors").any? { |error| error.include?("adversarial expected_outcome") }
     end
+  end
+
+  def test_codeql_org_defaults_must_stay_disabled
+    contract = EvalOpsOrgControlPlaneContract.load_contract(".github/contracts/org-control-plane.yml")
+    contract["github_security_configuration"]["required_settings"]["code_scanning_default_setup"] = "enabled"
+
+    report = EvalOpsOrgControlPlaneContract.verify(contract, root: Dir.pwd)
+
+    assert_equal "fail", report.fetch("status")
+    assert_includes(
+      report.fetch("errors"),
+      "github_security_configuration.required_settings.code_scanning_default_setup must be disabled"
+    )
   end
 
   private
