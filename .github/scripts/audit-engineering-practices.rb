@@ -662,7 +662,7 @@ module EvalOpsEngineeringPracticesAudit
       findings << {
         "practice" => "security-slo",
         "severity" => "high",
-        "message" => "CodeQL workflow references were found in checked-in workflow paths.",
+        "message" => "CodeQL or GitHub Code Scanning workflow references were found in checked-in workflow paths.",
         "matches" => workflow_matches
       }
     end
@@ -798,7 +798,7 @@ module EvalOpsEngineeringPracticesAudit
     observed = no_codeql["observed_settings"] || {}
     lines << "- No-CodeQL config: `#{no_codeql["security_configuration_id"] || "unknown"}` default=`#{no_codeql["default_for_new_repos"] || "unknown"}` code_scanning_default_setup=`#{observed["code_scanning_default_setup"] || "unknown"}` assigned_repos=`#{no_codeql["assigned_repository_count"] || 0}`"
     workflow_match_count = Array(no_codeql["forbidden_workflow_queries"]).sum { |query| Array(query["matches"]).length }
-    lines << "- CodeQL workflow matches: `#{workflow_match_count}`"
+    lines << "- CodeQL/Code Scanning workflow matches: `#{workflow_match_count}`"
     lines << "- CodeQL required-check matches: `#{Array(no_codeql["required_check_matches"]).length}`"
     Array(report.dig("live", "issue_queries")).each do |query|
       lines << "- #{query["key"]}: `#{query["total_count"]}`"

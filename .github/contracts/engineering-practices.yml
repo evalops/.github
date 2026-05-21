@@ -214,6 +214,9 @@ live_audit:
     forbidden_workflow_queries:
       codeql_action_workflows: 'github/codeql-action org:evalops path:.github/workflows'
       codeql_named_workflows: 'codeql org:evalops path:.github/workflows'
+      code_scanning_api_workflows: 'code-scanning/sarifs org:evalops path:.github/workflows'
+      sarif_upload_workflows: 'upload-sarif org:evalops path:.github/workflows'
+      security_events_write_workflows: '"security-events: write" org:evalops path:.github/workflows'
 commands:
   local_contract_check: "ruby .github/scripts/audit-engineering-practices.rb --contract-only"
   live_report: "ruby .github/scripts/audit-engineering-practices.rb --json-output engineering-practices-audit.json --markdown-output engineering-practices-audit.md"

@@ -86,7 +86,7 @@ class AuditEngineeringPracticesTest < Minitest::Test
     assert_equal "attention", report.fetch("status")
     findings = report.fetch("findings")
     assert findings.any? { |finding| finding.fetch("message").include?("CodeQL/default code-scanning baseline drifted") }
-    assert findings.any? { |finding| finding.fetch("message").include?("CodeQL workflow references") }
+    assert findings.any? { |finding| finding.fetch("message").include?("CodeQL or GitHub Code Scanning workflow references") }
     assert findings.any? { |finding| finding.fetch("message").include?("CodeQL appears in branch protection") }
     assert_equal 1, report.dig("live", "no_codeql", "required_check_matches").length
   end
