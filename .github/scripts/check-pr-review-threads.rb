@@ -77,6 +77,7 @@ module EvalOpsReviewThreadGuard
   def top_level_feedback(payload, min_severity: "high")
     threshold = SEVERITY_RANK.fetch(min_severity)
     pull_request = payload.dig("data", "repository", "pullRequest") || {}
+    current_head_oid = pull_request["headRefOid"].to_s
     feedback = []
     Array(pull_request.dig("comments", "nodes")).each do |comment|
       next if informational_summary?(comment["body"], author: comment.dig("author", "login"))
@@ -97,6 +98,9 @@ module EvalOpsReviewThreadGuard
 
       detected = severity(review["body"])
       next if SEVERITY_RANK.fetch(detected) < threshold
+
+      review_commit_oid = review.dig("commit", "oid").to_s
+      next if !current_head_oid.empty? && !review_commit_oid.empty? && review_commit_oid != current_head_oid
 
       feedback << {
         kind: "pr_review",
@@ -148,6 +152,7 @@ module EvalOpsReviewThreadGuard
       query($owner:String!,$repo:String!,$number:Int!) {
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$number) {
+            headRefOid
             comments(first:100) {
               pageInfo {
                 hasNextPage
@@ -171,6 +176,9 @@ module EvalOpsReviewThreadGuard
                   login
                 }
                 body
+                commit {
+                  oid
+                }
                 state
                 url
               }
@@ -239,6 +247,9 @@ module EvalOpsReviewThreadGuard
                   login
                 }
                 body
+                commit {
+                  oid
+                }
                 state
                 url
               }

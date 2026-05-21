@@ -84,9 +84,11 @@ class CheckPrReviewThreadsTest < Minitest::Test
 
   def test_detects_top_level_review_body_severity_markers
     payload = payload_with(
+      head_ref_oid: "head-sha",
       reviews: [
         {
           "author" => { "login" => "reviewer" },
+          "commit" => { "oid" => "head-sha" },
           "state" => "COMMENTED",
           "body" => "**P1 Badge** paired public PR feedback is missing",
           "url" => "https://github.com/evalops/example/pull/1#pullrequestreview-1"
@@ -98,6 +100,32 @@ class CheckPrReviewThreadsTest < Minitest::Test
 
     assert_equal ["pr_review"], feedback.map { |item| item.fetch(:kind) }
     assert_equal "p1", feedback.first.fetch(:severity)
+  end
+
+  def test_skips_top_level_review_feedback_from_superseded_heads
+    payload = payload_with(
+      head_ref_oid: "new-head",
+      reviews: [
+        {
+          "author" => { "login" => "chatgpt-codex-connector[bot]" },
+          "commit" => { "oid" => "old-head" },
+          "state" => "COMMENTED",
+          "body" => "**P1 Badge** stale feedback already fixed on the latest head",
+          "url" => "https://github.com/evalops/example/pull/1#pullrequestreview-1"
+        },
+        {
+          "author" => { "login" => "reviewer" },
+          "commit" => { "oid" => "new-head" },
+          "state" => "COMMENTED",
+          "body" => "**High Severity** latest-head feedback still blocks",
+          "url" => "https://github.com/evalops/example/pull/1#pullrequestreview-2"
+        }
+      ]
+    )
+
+    feedback = EvalOpsReviewThreadGuard.blocking_feedback(payload, min_severity: "high")
+
+    assert_equal ["https://github.com/evalops/example/pull/1#pullrequestreview-2"], feedback.map { |item| item.fetch(:url) }
   end
 
   def test_skips_informational_bot_pr_summaries
@@ -238,11 +266,12 @@ class CheckPrReviewThreadsTest < Minitest::Test
 
   private
 
-  def payload_with(comments: [], reviews: [], threads: [])
+  def payload_with(comments: [], reviews: [], threads: [], head_ref_oid: nil)
     {
       "data" => {
         "repository" => {
           "pullRequest" => {
+            "headRefOid" => head_ref_oid,
             "comments" => { "nodes" => comments },
             "reviews" => { "nodes" => reviews },
             "reviewThreads" => { "nodes" => threads }
