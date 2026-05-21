@@ -7,7 +7,9 @@ Actions minute or artifact quotas block unrelated pull requests.
 
 Do not add CodeQL or GitHub default code-scanning workflows. EvalOps does not
 use them, and they should not become required checks, scheduled jobs, or
-generated default-setup runs.
+generated default-setup runs. The org security configuration should keep
+GitHub Advanced Security limited to secret protection and keep default code
+scanning disabled.
 
 Security checks need an owner and a runtime budget before they belong in CI.
 Prefer narrow repository-owned checks that answer a concrete question:
