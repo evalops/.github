@@ -43,10 +43,12 @@ class AuditEngineeringPracticesTest < Minitest::Test
     assert findings.any? { |finding| finding.fetch("practice") == "backlog-lifecycle" }
     assert findings.any? { |finding| finding.fetch("practice") == "security-slo" }
     assert findings.any? { |finding| finding.fetch("practice") == "release-train-state" }
+    refute findings.any? { |finding| finding.fetch("message").include?("CodeQL") }
 
     markdown = EvalOpsEngineeringPracticesAudit.markdown_report(report)
     assert_includes markdown, "Engineering Practices Audit"
     assert_includes markdown, "Missing Repo Rails"
+    assert_includes markdown, "No-CodeQL config"
     JSON.parse(JSON.pretty_generate(report))
   end
 
@@ -66,6 +68,27 @@ class AuditEngineeringPracticesTest < Minitest::Test
     policy = report.dig("live", "branch_protection").fetch(0)
     assert_equal ["ci"], policy.fetch("ruleset_required_status_checks")
     refute report.fetch("findings").any? { |finding| finding.fetch("practice") == "org-rulesets" }
+  end
+
+  def test_codeql_drift_is_reported_without_fetching_code_scanning_alerts
+    contract = EvalOpsEngineeringPracticesAudit.load_contract(".github/contracts/engineering-practices.yml")
+    contract["live_audit"]["sampled_repos"] = ["evalops/platform"]
+    contract["repo_tiers"]["critical"]["repos"] = ["evalops/platform"]
+    runner = CodeqlDriftGhRunner.new
+
+    report = EvalOpsEngineeringPracticesAudit.live_audit(
+      contract,
+      runner: runner,
+      root: Dir.pwd,
+      generated_at: Time.utc(2026, 5, 21, 18, 0, 0)
+    )
+
+    assert_equal "attention", report.fetch("status")
+    findings = report.fetch("findings")
+    assert findings.any? { |finding| finding.fetch("message").include?("CodeQL/default code-scanning baseline drifted") }
+    assert findings.any? { |finding| finding.fetch("message").include?("CodeQL workflow references") }
+    assert findings.any? { |finding| finding.fetch("message").include?("CodeQL appears in branch protection") }
+    assert_equal 1, report.dig("live", "no_codeql", "required_check_matches").length
   end
 
   class FakeGhRunner
@@ -95,6 +118,9 @@ class AuditEngineeringPracticesTest < Minitest::Test
       return ["Closing because the sentinel no longer ranks this class.\n", "", true] if command.start_with?("issue view 69")
       return [JSON.generate(dependabot_alert) + "\n", "", true] if command.include?("/dependabot/alerts")
       return ["{}\n{}\n", "", true] if command.include?("/secret-scanning/alerts")
+      return code_security_defaults if command == "api -X GET /orgs/evalops/code-security/configurations/defaults"
+      return code_security_repositories if command.include?("/code-security/configurations/245233/repositories")
+      return json([]) if command.start_with?("search code ")
       raise "audit must not fetch code scanning alerts" if command.include?("/code-scanning/alerts")
 
       json({})
@@ -164,6 +190,40 @@ class AuditEngineeringPracticesTest < Minitest::Test
         }
       }
     end
+
+    def code_security_defaults
+      json(
+        [
+          {
+            "default_for_new_repos" => "all",
+            "configuration" => {
+              "id" => 245_233,
+              "name" => "EvalOps security baseline recommended",
+              "advanced_security" => "secret_protection",
+              "code_scanning_default_setup" => "disabled",
+              "dependency_graph_autosubmit_action" => "disabled"
+            }
+          }
+        ]
+      )
+    end
+
+    def code_security_repositories
+      repos = [
+        "evalops/platform",
+        "evalops/deploy",
+        "evalops/ensemble",
+        "evalops/maestro-internal",
+        "evalops/maestro",
+        "evalops/cerebro",
+        "evalops/chat",
+        "evalops/.github",
+        "evalops/hopper",
+        "evalops/nimbus",
+        "evalops/kestrel"
+      ]
+      json(repos.map { |repo| { "repository" => { "full_name" => repo }, "status" => "enforced" } })
+    end
   end
 
   class RulesetPolicyGhRunner
@@ -174,6 +234,9 @@ class AuditEngineeringPracticesTest < Minitest::Test
       return json({}) if command.include?("/branches/main/protection")
       return json({ "path" => "ok" }) if command.include?("/contents/")
       return json({ "total_count" => 0, "incomplete_results" => false }) if command.start_with?("api -X GET /search/issues")
+      return code_security_defaults if command == "api -X GET /orgs/evalops/code-security/configurations/defaults"
+      return code_security_repositories if command.include?("/code-security/configurations/245233/repositories")
+      return json([]) if command.start_with?("search code ")
       return json([]) if command.start_with?("issue list")
       return ["", "", true] if command.start_with?("issue view")
       return ["", "", true] if command.include?("/dependabot/alerts")
@@ -219,6 +282,101 @@ class AuditEngineeringPracticesTest < Minitest::Test
                 }
               ]
             }
+          }
+        ]
+      )
+    end
+
+    def code_security_defaults
+      json(
+        [
+          {
+            "default_for_new_repos" => "all",
+            "configuration" => {
+              "id" => 245_233,
+              "name" => "EvalOps security baseline recommended",
+              "advanced_security" => "secret_protection",
+              "code_scanning_default_setup" => "disabled",
+              "dependency_graph_autosubmit_action" => "disabled"
+            }
+          }
+        ]
+      )
+    end
+
+    def code_security_repositories
+      json([{ "repository" => { "full_name" => "evalops/platform" }, "status" => "enforced" }])
+    end
+  end
+
+  class CodeqlDriftGhRunner
+    def call(args)
+      command = args.join(" ")
+      return json([]) if command == "api -X GET /orgs/evalops/rulesets"
+      return branch_protection if command.include?("/branches/main/protection")
+      return json({ "path" => "ok" }) if command.include?("/contents/")
+      return json({ "total_count" => 0, "incomplete_results" => false }) if command.start_with?("api -X GET /search/issues")
+      return json([]) if command.start_with?("issue list")
+      return ["", "", true] if command.start_with?("issue view")
+      return ["", "", true] if command.include?("/dependabot/alerts")
+      return ["", "", true] if command.include?("/secret-scanning/alerts")
+      return code_security_defaults if command == "api -X GET /orgs/evalops/code-security/configurations/defaults"
+      return code_security_repositories if command.include?("/code-security/configurations/245233/repositories")
+      return code_search_match if command.start_with?("search code ")
+      raise "audit must not fetch code scanning alerts" if command.include?("/code-scanning/alerts")
+
+      json({})
+    end
+
+    private
+
+    def json(value)
+      [JSON.generate(value), "", true]
+    end
+
+    def branch_protection
+      json(
+        {
+          "required_status_checks" => {
+            "contexts" => ["CodeQL"]
+          },
+          "required_pull_request_reviews" => {},
+          "enforce_admins" => {
+            "enabled" => true
+          }
+        }
+      )
+    end
+
+    def code_security_defaults
+      json(
+        [
+          {
+            "default_for_new_repos" => "all",
+            "configuration" => {
+              "id" => 245_233,
+              "name" => "EvalOps security baseline recommended",
+              "advanced_security" => "enabled",
+              "code_scanning_default_setup" => "enabled",
+              "dependency_graph_autosubmit_action" => "disabled"
+            }
+          }
+        ]
+      )
+    end
+
+    def code_security_repositories
+      json([{ "repository" => { "full_name" => "evalops/platform" }, "status" => "enforced" }])
+    end
+
+    def code_search_match
+      json(
+        [
+          {
+            "repository" => {
+              "nameWithOwner" => "evalops/platform"
+            },
+            "path" => ".github/workflows/codeql.yml"
           }
         ]
       )

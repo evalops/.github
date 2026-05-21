@@ -35,6 +35,12 @@ module EvalOpsEngineeringPracticesAudit
     "total_count" => 0,
     "incomplete_results" => false
   }.freeze
+  DEFAULT_FORBIDDEN_CODEQL_PATTERNS = [
+    "codeql",
+    "code scanning",
+    "code-scanning",
+    "github/codeql-action"
+  ].freeze
 
   module_function
 
@@ -129,6 +135,13 @@ module EvalOpsEngineeringPracticesAudit
     errors << "live_audit.owner is required" if contract.dig("live_audit", "owner").to_s.empty?
     errors << "live_audit.sampled_repos must not be empty" if Array(contract.dig("live_audit", "sampled_repos")).empty?
 
+    no_codeql = contract.dig("live_audit", "no_codeql") || {}
+    errors << "live_audit.no_codeql.security_configuration_id is required" if no_codeql["security_configuration_id"].to_i.zero?
+    expected_code_scanning = no_codeql.dig("required_settings", "code_scanning_default_setup").to_s
+    errors << "live_audit.no_codeql.required_settings.code_scanning_default_setup must be disabled" unless expected_code_scanning == "disabled"
+    excluded_scanners = Array(contract.dig("live_audit", "security_alert_slo", "excluded_scanners")).map(&:to_s)
+    errors << "live_audit.security_alert_slo.excluded_scanners must include codeql" unless excluded_scanners.include?("codeql")
+
     {
       "status" => errors.empty? ? "pass" : "fail",
       "errors" => errors,
@@ -180,6 +193,22 @@ module EvalOpsEngineeringPracticesAudit
       SEARCH_TOTAL_FALLBACK
     )
     payload.fetch("total_count", 0)
+  end
+
+  def code_search_matches(query, runner, warnings)
+    payload = run_gh(
+      ["search", "code", query, "--json", "repository,path", "--limit", "100"],
+      runner,
+      warnings,
+      []
+    )
+    Array(payload).map do |item|
+      repository = item.dig("repository", "nameWithOwner") || item.dig("repository", "fullName")
+      {
+        "repository" => repository.to_s,
+        "path" => item["path"].to_s
+      }
+    end.reject { |item| item["repository"].empty? || item["path"].empty? }
   end
 
   def org_rulesets(owner, runner, warnings)
@@ -259,6 +288,120 @@ module EvalOpsEngineeringPracticesAudit
       "required_status_checks" => contexts.uniq.sort,
       "requires_reviews" => payload.key?("required_pull_request_reviews"),
       "enforce_admins" => payload.dig("enforce_admins", "enabled") == true
+    }
+  end
+
+  def code_security_default(owner, config_id, runner, warnings)
+    defaults = run_gh(
+      ["api", "-X", "GET", "/orgs/#{owner}/code-security/configurations/defaults"],
+      runner,
+      warnings,
+      []
+    )
+    Array(defaults).find { |entry| entry.dig("configuration", "id").to_i == config_id.to_i } || {}
+  end
+
+  def code_security_assigned_repositories(owner, config_id, runner, warnings)
+    stdout, stderr, success = runner.call(
+      [
+        "api",
+        "--paginate",
+        "-X",
+        "GET",
+        "/orgs/#{owner}/code-security/configurations/#{config_id}/repositories",
+        "-f",
+        "per_page=100",
+        "--jq",
+        ".[]"
+      ]
+    )
+    unless success
+      warnings << "code-security configuration repository fetch failed: #{stderr.to_s.strip}"
+      return []
+    end
+    entries = stdout.lines.map { |line| parse_json(line) }.compact
+    if entries.empty?
+      parsed = parse_json(stdout)
+      entries = parsed if parsed.is_a?(Array)
+    end
+    entries = Array(entries).flat_map { |entry| entry.is_a?(Array) ? entry : [entry] }
+    entries.map do |entry|
+      {
+        "repository" => entry.dig("repository", "full_name").to_s,
+        "status" => entry["status"].to_s
+      }
+    end.reject { |entry| entry["repository"].empty? }
+  end
+
+  def forbidden_codeql_patterns(config)
+    patterns = Array(config["forbidden_required_check_patterns"]).map(&:to_s)
+    patterns.empty? ? DEFAULT_FORBIDDEN_CODEQL_PATTERNS : patterns
+  end
+
+  def forbidden_codeql_check?(context, patterns)
+    normalized = context.to_s.downcase
+    patterns.any? { |pattern| normalized.include?(pattern.downcase) }
+  end
+
+  def codeql_required_check_matches(branch, patterns)
+    Array(branch).flat_map do |item|
+      repo = item["repo"]
+      branch_checks = Array(item["required_status_checks"]).select { |context| forbidden_codeql_check?(context, patterns) }
+      ruleset_checks = Array(item["ruleset_required_status_check_rulesets"]).flat_map do |ruleset|
+        Array(ruleset["required_status_checks"]).select { |context| forbidden_codeql_check?(context, patterns) }.map do |context|
+          {
+            "repo" => repo,
+            "source" => "ruleset",
+            "ruleset" => ruleset["name"],
+            "context" => context
+          }
+        end
+      end
+      direct_checks = branch_checks.map do |context|
+        {
+          "repo" => repo,
+          "source" => "branch_protection",
+          "context" => context
+        }
+      end
+      direct_checks + ruleset_checks
+    end
+  end
+
+  def no_codeql_audit(contract, branch, runner, warnings)
+    config = contract.dig("live_audit", "no_codeql") || {}
+    owner = contract.dig("live_audit", "owner").to_s
+    config_id = config["security_configuration_id"].to_i
+    default = code_security_default(owner, config_id, runner, warnings)
+    assigned = code_security_assigned_repositories(owner, config_id, runner, warnings)
+    assigned_by_repo = assigned.to_h { |entry| [entry["repository"], entry["status"]] }
+    sampled_repos = Array(contract.dig("live_audit", "sampled_repos")).map(&:to_s)
+    missing_sampled = sampled_repos.reject { |repo| assigned_by_repo[repo] == "enforced" }
+    workflow_matches = (config["forbidden_workflow_queries"] || {}).map do |key, query|
+      {
+        "key" => key,
+        "query" => query,
+        "matches" => code_search_matches(query, runner, warnings)
+      }
+    end
+
+    configuration = default["configuration"] || {}
+    required = config["required_settings"] || {}
+    {
+      "security_configuration_id" => config_id,
+      "configuration_name" => configuration["name"],
+      "default_for_new_repos" => default["default_for_new_repos"],
+      "required_settings" => required,
+      "observed_settings" => {
+        "advanced_security" => configuration["advanced_security"],
+        "code_scanning_default_setup" => configuration["code_scanning_default_setup"],
+        "dependency_graph_autosubmit_action" => configuration["dependency_graph_autosubmit_action"]
+      },
+      "assigned_repository_count" => assigned.length,
+      "missing_sampled_repositories" => missing_sampled,
+      "forbidden_workflow_queries" => workflow_matches,
+      "forbidden_required_check_patterns" => forbidden_codeql_patterns(config),
+      "required_check_matches" => codeql_required_check_matches(branch, forbidden_codeql_patterns(config))
     }
   end
 
@@ -490,6 +633,48 @@ module EvalOpsEngineeringPracticesAudit
       }
     end
 
+    no_codeql = report.dig("live", "no_codeql") || {}
+    required_settings = no_codeql["required_settings"] || {}
+    observed_settings = no_codeql["observed_settings"] || {}
+    mismatched_settings = required_settings.select do |key, expected|
+      observed_settings[key] != expected
+    end
+    if no_codeql["default_for_new_repos"] != "all" || !mismatched_settings.empty?
+      findings << {
+        "practice" => "security-slo",
+        "severity" => "high",
+        "message" => "GitHub CodeQL/default code-scanning baseline drifted from the EvalOps disabled configuration.",
+        "configuration_id" => no_codeql["security_configuration_id"],
+        "default_for_new_repos" => no_codeql["default_for_new_repos"],
+        "mismatched_settings" => mismatched_settings
+      }
+    end
+    unless Array(no_codeql["missing_sampled_repositories"]).empty?
+      findings << {
+        "practice" => "security-slo",
+        "severity" => "high",
+        "message" => "Sampled repos are not enforced by the no-CodeQL security configuration.",
+        "repos" => no_codeql["missing_sampled_repositories"]
+      }
+    end
+    workflow_matches = Array(no_codeql["forbidden_workflow_queries"]).flat_map { |query| Array(query["matches"]) }
+    unless workflow_matches.empty?
+      findings << {
+        "practice" => "security-slo",
+        "severity" => "high",
+        "message" => "CodeQL workflow references were found in checked-in workflow paths.",
+        "matches" => workflow_matches
+      }
+    end
+    unless Array(no_codeql["required_check_matches"]).empty?
+      findings << {
+        "practice" => "security-slo",
+        "severity" => "high",
+        "message" => "CodeQL appears in branch protection or org-ruleset required checks.",
+        "matches" => no_codeql["required_check_matches"]
+      }
+    end
+
     train_state = report.dig("live", "release_train_state") || {}
     Array(report.dig("live", "release_train_queries")).each do |query|
       next unless query["total_count"].to_i.positive?
@@ -550,7 +735,8 @@ module EvalOpsEngineeringPracticesAudit
         "secret_scanning" => secret_scanning,
         "secret_scanning_open" => secret_scanning.fetch("total", 0),
         "excluded_scanners" => Array(contract.dig("live_audit", "security_alert_slo", "excluded_scanners"))
-      }
+      },
+      "no_codeql" => no_codeql_audit(contract, branch, runner, warnings)
     }
 
     static = validate_contract(contract, root: root)
@@ -608,6 +794,12 @@ module EvalOpsEngineeringPracticesAudit
     unless Array(security["excluded_scanners"]).empty?
       lines << "- Excluded scanners: `#{security["excluded_scanners"].join(", ")}`"
     end
+    no_codeql = report.dig("live", "no_codeql") || {}
+    observed = no_codeql["observed_settings"] || {}
+    lines << "- No-CodeQL config: `#{no_codeql["security_configuration_id"] || "unknown"}` default=`#{no_codeql["default_for_new_repos"] || "unknown"}` code_scanning_default_setup=`#{observed["code_scanning_default_setup"] || "unknown"}` assigned_repos=`#{no_codeql["assigned_repository_count"] || 0}`"
+    workflow_match_count = Array(no_codeql["forbidden_workflow_queries"]).sum { |query| Array(query["matches"]).length }
+    lines << "- CodeQL workflow matches: `#{workflow_match_count}`"
+    lines << "- CodeQL required-check matches: `#{Array(no_codeql["required_check_matches"]).length}`"
     Array(report.dig("live", "issue_queries")).each do |query|
       lines << "- #{query["key"]}: `#{query["total_count"]}`"
     end
