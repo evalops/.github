@@ -46,6 +46,19 @@ class WorkflowPrRefGuardTest < Minitest::Test
     )
   end
 
+  def test_agent_authorship_label_apply_is_best_effort_on_token_denial
+    workflow = File.read(File.join(root, ".github", "workflows", "agent-authorship-label.yml"))
+
+    assert_includes workflow, "Skipping authorship label apply"
+    assert_match(/Bad credentials\|HTTP 401\|Resource not accessible\|HTTP 403/, workflow)
+    assert_operator(
+      workflow.index("Apply authorship label"),
+      :<,
+      workflow.index("Check required Maestro trailers"),
+      "The required trailer gate should still run after best-effort label application.",
+    )
+  end
+
   private
 
   def root

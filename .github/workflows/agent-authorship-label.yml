@@ -76,6 +76,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          label_api_denied() {
+            local output_file="$1"
+            grep -qiE '(Bad credentials|HTTP 401|Resource not accessible|HTTP 403)' "${output_file}"
+          }
+
+          warn_label_api_denied() {
+            local action="$1"
+            local output_file="$2"
+            echo "::warning::Skipping authorship label maintenance while ${action}; GitHub API denied label access."
+            cat "${output_file}" >&2
+          }
+
           ensure_label() {
             local name="$1"
             local color="$2"
@@ -94,10 +106,30 @@ jobs:
               existing_description="$(jq -r '.description // ""' <<<"${label_json}")"
 
               if [ "${existing_color}" != "${color}" ] || [ "${existing_description}" != "${description}" ]; then
+                local update_stderr
+                local update_status=0
+                update_stderr="$(mktemp)"
                 gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${name}" \
                   -f color="${color}" \
-                  -f description="${description}" >/dev/null
+                  -f description="${description}" >/dev/null 2>"${update_stderr}" || update_status=$?
+                if [ "${update_status}" -ne 0 ]; then
+                  if label_api_denied "${update_stderr}"; then
+                    warn_label_api_denied "updating ${name}" "${update_stderr}"
+                    rm -f "${update_stderr}"
+                    return 0
+                  fi
+                  cat "${update_stderr}" >&2
+                  rm -f "${update_stderr}"
+                  return "${update_status}"
+                fi
+                rm -f "${update_stderr}"
               fi
+              return 0
+            fi
+
+            if label_api_denied "${lookup_stderr}"; then
+              warn_label_api_denied "looking up ${name}" "${lookup_stderr}"
+              rm -f "${lookup_stderr}"
               return 0
             fi
 
@@ -128,9 +160,28 @@ jobs:
             if grep -qiE '(already.?exists|already_exists|Validation Failed)' "${output_file}"; then
               echo "Label ${name} was created concurrently; updating metadata if needed."
               rm -f "${output_file}"
+              create_status=0
+              output_file="$(mktemp)"
               gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${name}" \
                 -f color="${color}" \
-                -f description="${description}" >/dev/null
+                -f description="${description}" >"${output_file}" 2>&1 || create_status=$?
+              if [ "${create_status}" -ne 0 ]; then
+                if label_api_denied "${output_file}"; then
+                  warn_label_api_denied "updating concurrently-created ${name}" "${output_file}"
+                  rm -f "${output_file}"
+                  return 0
+                fi
+                cat "${output_file}" >&2
+                rm -f "${output_file}"
+                return "${create_status}"
+              fi
+              rm -f "${output_file}"
+              return 0
+            fi
+
+            if label_api_denied "${output_file}"; then
+              warn_label_api_denied "creating ${name}" "${output_file}"
+              rm -f "${output_file}"
               return 0
             fi
 
@@ -152,7 +203,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          current_labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --jq '.[].name')"
+          label_api_denied() {
+            local output_file="$1"
+            grep -qiE '(Bad credentials|HTTP 401|Resource not accessible|HTTP 403)' "${output_file}"
+          }
+
+          skip_label_apply() {
+            local action="$1"
+            local output_file="$2"
+            echo "::warning::Skipping authorship label apply while ${action}; GitHub API denied label access."
+            cat "${output_file}" >&2
+            exit 0
+          }
+
+          current_labels_file="$(mktemp)"
+          current_labels_stderr="$(mktemp)"
+          current_labels_status=0
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
+            --jq '.[].name' >"${current_labels_file}" 2>"${current_labels_stderr}" || current_labels_status=$?
+          if [ "${current_labels_status}" -ne 0 ]; then
+            if label_api_denied "${current_labels_stderr}"; then
+              skip_label_apply "listing labels on #${PR_NUMBER}" "${current_labels_stderr}"
+            fi
+            cat "${current_labels_stderr}" >&2
+            rm -f "${current_labels_file}" "${current_labels_stderr}"
+            exit "${current_labels_status}"
+          fi
+          current_labels="$(cat "${current_labels_file}")"
+          rm -f "${current_labels_file}" "${current_labels_stderr}"
 
           has_label() {
             local label="$1"
@@ -199,6 +277,10 @@ jobs:
               return 0
             fi
 
+            if label_api_denied "${stderr_file}"; then
+              skip_label_apply "removing ${label} from #${PR_NUMBER}" "${stderr_file}"
+            fi
+
             cat "${stderr_file}" >&2
             rm -f "${stderr_file}"
             return "${status}"
@@ -209,8 +291,19 @@ jobs:
           done
 
           if [ "${has_desired_label}" != true ]; then
+            add_stderr="$(mktemp)"
+            add_status=0
             gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
-              -f "labels[]=${AUTHORSHIP_LABEL}" >/dev/null
+              -f "labels[]=${AUTHORSHIP_LABEL}" >/dev/null 2>"${add_stderr}" || add_status=$?
+            if [ "${add_status}" -ne 0 ]; then
+              if label_api_denied "${add_stderr}"; then
+                skip_label_apply "adding ${AUTHORSHIP_LABEL} to #${PR_NUMBER}" "${add_stderr}"
+              fi
+              cat "${add_stderr}" >&2
+              rm -f "${add_stderr}"
+              exit "${add_status}"
+            fi
+            rm -f "${add_stderr}"
           fi
 
           echo "Applied ${AUTHORSHIP_LABEL} to #${PR_NUMBER}."
