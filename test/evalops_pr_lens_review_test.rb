@@ -90,6 +90,18 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_empty EvalOpsPrLensReview.lenses_for_paths(["README.md", "docs/runbook.md"])
   end
 
+  def test_review_context_helpers_scrub_invalid_utf8_bytes
+    invalid = "comment \xC3 body".b
+
+    section = EvalOpsPrLensReview.list_section("Inline review comments", ["  #{invalid}  "])
+    snippet = EvalOpsPrLensReview.short_text(invalid, max_bytes: 10)
+
+    assert_includes section, "comment"
+    assert_predicate section, :valid_encoding?
+    assert_includes snippet, "...[truncated]"
+    assert_predicate snippet, :valid_encoding?
+  end
+
   def test_discover_open_prs_can_force_lenses_for_explicit_review_requests
     pr = {
       "number" => 103,
