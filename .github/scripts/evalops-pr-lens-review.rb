@@ -720,16 +720,22 @@ module EvalOpsPrLensReview
     end.join("\n")
   end
 
+  def utf8_text(value)
+    text = value.to_s
+    text = text.dup.force_encoding(Encoding::UTF_8) unless text.encoding == Encoding::UTF_8
+    text.scrub
+  end
+
   def short_text(value, max_bytes: 1_500)
-    text = value.to_s.strip
+    text = utf8_text(value).strip
     return "" if text.empty?
     return text if text.bytesize <= max_bytes
 
-    "#{text.byteslice(0, max_bytes)}\n...[truncated]"
+    "#{text.byteslice(0, max_bytes).to_s.scrub}\n...[truncated]"
   end
 
   def list_section(title, rows)
-    body = rows.compact.map(&:strip).reject(&:empty?)
+    body = rows.compact.map { |row| utf8_text(row).strip }.reject(&:empty?)
     return "#{title}:\n(none)" if body.empty?
 
     "#{title}:\n#{body.first(MAX_CONTEXT_ITEMS).join("\n")}"
