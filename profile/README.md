@@ -1,6 +1,6 @@
 # EvalOps
 
-The organizational operating system for AI agent workforces — evaluation, governance, and observability for shipping accountable AI.
+The control plane for AI agent workforces — see which agents, assistants, and tools are running, govern what each one is allowed to do through policy, approvals, evaluation, cost, and audit, and measure how much of their real action surface is actually covered. Widen autonomy only as the record supports it.
 
 ## Operating Conventions
 
