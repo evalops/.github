@@ -1,0 +1,30 @@
+name: positioning-guardrail
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "profile/README.md"
+      - "README.md"
+      - "AGENTS.md"
+      - "SECURITY.md"
+      - "scripts/check-positioning.mjs"
+      - ".github/workflows/positioning-guardrail.yml"
+  pull_request:
+    paths:
+      - "profile/README.md"
+      - "README.md"
+      - "AGENTS.md"
+      - "SECURITY.md"
+      - "scripts/check-positioning.mjs"
+      - ".github/workflows/positioning-guardrail.yml"
+
+jobs:
+  positioning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node scripts/check-positioning.mjs
