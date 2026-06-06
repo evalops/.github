@@ -13,7 +13,7 @@ The control plane for AI agent workforces — see which agents, assistants, and 
 Discover repos by topic:
 
 - [`evalops-platform`](https://github.com/search?q=topic%3Aevalops-platform+org%3Aevalops&type=repositories) — Core Go microservices (identity, governance, metering, approvals, and more)
-- [`evalops-product`](https://github.com/search?q=topic%3Aevalops-product+org%3Aevalops&type=repositories) — Product frontends (console, admin, maestro)
+- [`evalops-product`](https://github.com/search?q=topic%3Aevalops-product+org%3Aevalops&type=repositories) — Product frontends (maestro, conductor, admin)
 - [`evalops-infra`](https://github.com/search?q=topic%3Aevalops-infra+org%3Aevalops&type=repositories) — Deployment and infrastructure
 - [`evalops-data`](https://github.com/search?q=topic%3Aevalops-data+org%3Aevalops&type=repositories) — Data pipelines and analytics
 - [`evalops-docs`](https://github.com/search?q=topic%3Aevalops-docs+org%3Aevalops&type=repositories) — Documentation
@@ -22,7 +22,7 @@ Discover repos by topic:
 
 | Repo | Description |
 |---|---|
-| [proto](https://github.com/evalops/proto) | Canonical protobuf contracts across all services |
-| [service-runtime](https://github.com/evalops/service-runtime) | Shared Go runtime for platform services |
+| [platform](https://github.com/evalops/platform) | Control-plane monorepo — Go services, protobuf contracts, and the console UI |
+| [maestro](https://github.com/evalops/maestro) | Multi-model coding agent (TUI, IDE, Slack, GitHub) |
 | [deploy](https://github.com/evalops/deploy) | GitOps delivery: K8s manifests, Terraform, ArgoCD |
-| [console](https://github.com/evalops/console) | Fleet dashboard — mission control UI |
+| [hopper](https://github.com/evalops/hopper) | Marketing site |
