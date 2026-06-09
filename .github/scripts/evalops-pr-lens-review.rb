@@ -429,8 +429,15 @@ module EvalOpsPrLensReview
     summary
   end
 
+  def gh_api_paginated_json(*args, input: nil, token: ENV["GH_TOKEN"])
+    raw = gh_api("--paginate", "--slurp", *args, input: input, token: token)
+    return [] if raw.strip.empty?
+
+    JSON.parse(raw)
+  end
+
   def pr_files_metadata(repo:, pr:)
-    gh_api_json("repos/#{repo}/pulls/#{pr}/files?per_page=100")
+    Array(gh_api_paginated_json("repos/#{repo}/pulls/#{pr}/files?per_page=100")).flat_map { |page| Array(page) }
   end
 
   # Parse a single file's unified-diff patch (as returned by the GitHub files API)
@@ -772,7 +779,7 @@ module EvalOpsPrLensReview
   end
 
   def pr_file_summary(repo:, pr:)
-    files = gh_api_json("repos/#{repo}/pulls/#{pr}/files?per_page=100")
+    files = pr_files_metadata(repo: repo, pr: pr)
     files.map do |file|
       [
         file.fetch("status"),
@@ -1331,8 +1338,8 @@ module EvalOpsPrLensReview
     raw.lines.map(&:strip).reject(&:empty?)
   end
 
-  def delete_marker_comments(repo:, pr:)
-    marker_comment_ids(repo: repo, pr: pr).each do |id|
+  def delete_marker_comments(repo:, pr:, ids: nil)
+    Array(ids || marker_comment_ids(repo: repo, pr: pr)).each do |id|
       gh_api("--method", "DELETE", "repos/#{repo}/issues/comments/#{id}")
     end
   end
@@ -1350,14 +1357,14 @@ module EvalOpsPrLensReview
     raw.lines.map(&:strip).reject(&:empty?)
   end
 
-  def delete_marker_review_comments(repo:, pr:)
-    marker_review_comment_ids(repo: repo, pr: pr).each do |id|
+  def delete_marker_review_comments(repo:, pr:, ids: nil)
+    Array(ids || marker_review_comment_ids(repo: repo, pr: pr)).each do |id|
       gh_api("--method", "DELETE", "repos/#{repo}/pulls/comments/#{id}")
     end
   end
 
   def post_summary_comment(repo:, pr:, body:)
-    gh_api(
+    gh_api_json(
       "--method", "POST", "repos/#{repo}/issues/#{pr}/comments",
       input: JSON.generate(body: body)
     )
@@ -1365,7 +1372,7 @@ module EvalOpsPrLensReview
 
   def post_inline_comment(repo:, pr:, head_sha:, finding:)
     location = finding.fetch("code_location")
-    gh_api(
+    gh_api_json(
       "--method", "POST", "repos/#{repo}/pulls/#{pr}/comments",
       input: JSON.generate(
         commit_id: head_sha,
@@ -1385,18 +1392,38 @@ module EvalOpsPrLensReview
     delete_marker_review_comments(repo: repo, pr: pr)
   end
 
+  def rollback_publication(repo:, pr:, summary_comment_id:, inline_comment_ids:)
+    delete_marker_review_comments(repo: repo, pr: pr, ids: inline_comment_ids.reverse)
+    delete_marker_comments(repo: repo, pr: pr, ids: [summary_comment_id].compact)
+  rescue StandardError => e
+    warn "pr-lens: failed to roll back partial publication for #{repo}##{pr}: #{e.message.lines.first.to_s.strip}"
+  end
+
   # Publish findings as a marker summary issue comment plus inline PR comments
   # anchored to each anchorable finding's code_location. Findings whose line is
   # not in the diff, or that overflow the inline comment cap, are folded into the
-  # summary body. Idempotent: prior marker comments are deleted first.
+  # summary body. Prior marker comments are deleted only after the replacement
+  # publication succeeds so a partial API failure does not leave a misleading
+  # summary or erase the prior review.
   def publish_review(repo:, pr:, head_sha:, inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
-    clear_prior_publication(repo: repo, pr: pr)
-    return if inline_findings.empty? && summary_findings.empty?
+    if inline_findings.empty? && summary_findings.empty?
+      clear_prior_publication(repo: repo, pr: pr)
+      return
+    end
 
     inline_to_publish = inline_findings.first(MAX_FINDINGS_PER_COMMENT)
     overflow_inline_findings = inline_findings.drop(MAX_FINDINGS_PER_COMMENT)
+    prior_summary_ids = marker_comment_ids(repo: repo, pr: pr)
+    prior_inline_ids = marker_review_comment_ids(repo: repo, pr: pr)
+    published_inline_ids = []
+    published_summary_id = nil
 
-    post_summary_comment(
+    inline_to_publish.each do |finding|
+      response = post_inline_comment(repo: repo, pr: pr, head_sha: head_sha, finding: finding)
+      published_inline_ids << response["id"] if response && response["id"]
+    end
+
+    published_summary_id = post_summary_comment(
       repo: repo,
       pr: pr,
       body: review_summary_body(
@@ -1409,10 +1436,17 @@ module EvalOpsPrLensReview
         target_url: target_url
       )
     )
-
-    inline_to_publish.each do |finding|
-      post_inline_comment(repo: repo, pr: pr, head_sha: head_sha, finding: finding)
-    end
+    published_summary_id = published_summary_id["id"] if published_summary_id
+    delete_marker_comments(repo: repo, pr: pr, ids: prior_summary_ids)
+    delete_marker_review_comments(repo: repo, pr: pr, ids: prior_inline_ids)
+  rescue StandardError
+    rollback_publication(
+      repo: repo,
+      pr: pr,
+      summary_comment_id: published_summary_id,
+      inline_comment_ids: published_inline_ids
+    )
+    raise
   end
 
   def blocking_findings(findings, block_min_confidence:)

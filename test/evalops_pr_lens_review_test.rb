@@ -754,6 +754,22 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_empty map.fetch("infra/no_patch.bin")
   end
 
+  def test_pr_files_metadata_paginates_all_pages
+    calls = []
+    pages = [
+      [{ "filename" => "infra/main.tf" }],
+      [{ "filename" => "infra/extra.tf" }]
+    ]
+
+    EvalOpsPrLensReview.stub(:gh_api, ->(*args, **_kwargs) { calls << args; JSON.generate(pages) }) do
+      files = EvalOpsPrLensReview.pr_files_metadata(repo: "evalops/deploy", pr: 1)
+
+      assert_equal ["infra/main.tf", "infra/extra.tf"], files.map { |file| file.fetch("filename") }
+      assert_includes calls.fetch(0), "--paginate"
+      assert_includes calls.fetch(0), "--slurp"
+    end
+  end
+
   def test_finding_inline_anchorable_only_when_line_in_diff
     addable = { "infra/main.tf" => [22, 23].to_set }
     in_diff = finding("Anchorable", 0.9, 1, "infra/main.tf", 22)
@@ -896,11 +912,21 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     end
   end
 
-  def test_publish_review_posts_summary_comment_and_inline_comments_idempotently
+  def test_publish_review_posts_inline_comments_before_summary_and_clears_prior_on_success
     api_calls = []
     fake_api = lambda do |*args, **kwargs|
       api_calls << { args: args, input: kwargs[:input] }
-      ""
+      if args.include?("repos/evalops/deploy/issues/10/comments") && !args.include?("--method")
+        "111\n"
+      elsif args.include?("repos/evalops/deploy/pulls/10/comments") && !args.include?("--method")
+        "222\n333\n"
+      elsif args.include?("repos/evalops/deploy/pulls/10/comments")
+        JSON.generate("id" => 444)
+      elsif args.include?("repos/evalops/deploy/issues/10/comments")
+        JSON.generate("id" => 555)
+      else
+        ""
+      end
     end
 
     inline = [
@@ -910,7 +936,71 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       )
     ]
 
-    EvalOpsPrLensReview.stub(:clear_prior_publication, ->(**_kwargs) { api_calls << { clear: true } }) do
+    EvalOpsPrLensReview.stub(:gh_api, fake_api) do
+      EvalOpsPrLensReview.publish_review(
+        repo: "evalops/deploy",
+        pr: 10,
+        head_sha: "abc123",
+        inline_findings: inline,
+        summary_findings: [],
+        comment_min_confidence: 0.55,
+        target_url: "https://github.com/evalops/.github/actions/runs/1"
+      )
+    end
+
+    summary_call = api_calls.find do |call|
+      Array(call[:args]).include?("--method") && Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments")
+    end
+    assert summary_call
+    summary_payload = JSON.parse(summary_call.fetch(:input))
+    assert_includes summary_payload.fetch("body"), EvalOpsPrLensReview::MARKER
+
+    comment_call = api_calls.find do |call|
+      Array(call[:args]).include?("--method") && Array(call[:args]).include?("repos/evalops/deploy/pulls/10/comments")
+    end
+    assert comment_call
+    comment = JSON.parse(comment_call.fetch(:input))
+    assert_equal "abc123", comment.fetch("commit_id")
+    assert_equal "infra/main.tf", comment.fetch("path")
+    assert_equal 22, comment.fetch("line")
+    assert_equal "RIGHT", comment.fetch("side")
+    assert_includes comment.fetch("body"), EvalOpsPrLensReview::MARKER
+    assert_operator api_calls.index(comment_call), :<, api_calls.index(summary_call)
+    assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/comments/111") })
+    assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/222") })
+    assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/333") })
+    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/reviews") })
+  end
+
+  def test_publish_review_rolls_back_partial_inline_publication_without_deleting_prior_comments
+    api_calls = []
+    inline_posts = 0
+    inline = 2.times.map do |index|
+      finding("Inline #{index}", 0.9, 1, "infra/main.tf", index + 1).merge(
+        "lens" => "iam-blast-radius",
+        "check_id" => "evalops-pr-lens/iam-blast-radius"
+      )
+    end
+
+    fake_api = lambda do |*args, **kwargs|
+      api_calls << { args: args, input: kwargs[:input] }
+      if args.include?("repos/evalops/deploy/issues/10/comments") && !args.include?("--method")
+        "111\n"
+      elsif args.include?("repos/evalops/deploy/pulls/10/comments") && !args.include?("--method")
+        "222\n"
+      elsif args.include?("repos/evalops/deploy/pulls/10/comments")
+        inline_posts += 1
+        raise "inline publish failed" if inline_posts == 2
+
+        JSON.generate("id" => 444)
+      elsif args.include?("repos/evalops/deploy/issues/10/comments")
+        JSON.generate("id" => 555)
+      else
+        ""
+      end
+    end
+
+    error = assert_raises(RuntimeError) do
       EvalOpsPrLensReview.stub(:gh_api, fake_api) do
         EvalOpsPrLensReview.publish_review(
           repo: "evalops/deploy",
@@ -924,22 +1014,13 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       end
     end
 
-    # Prior publication is cleared before posting (idempotency).
-    assert_equal({ clear: true }, api_calls.fetch(0))
-    summary_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments") }
-    assert summary_call
-    summary_payload = JSON.parse(summary_call.fetch(:input))
-    assert_includes summary_payload.fetch("body"), EvalOpsPrLensReview::MARKER
-
-    comment_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/comments") }
-    assert comment_call
-    comment = JSON.parse(comment_call.fetch(:input))
-    assert_equal "abc123", comment.fetch("commit_id")
-    assert_equal "infra/main.tf", comment.fetch("path")
-    assert_equal 22, comment.fetch("line")
-    assert_equal "RIGHT", comment.fetch("side")
-    assert_includes comment.fetch("body"), EvalOpsPrLensReview::MARKER
-    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/reviews") })
+    assert_equal "inline publish failed", error.message
+    refute(api_calls.any? do |call|
+      Array(call[:args]).include?("--method") && Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments")
+    end)
+    assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/444") })
+    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/comments/111") })
+    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/222") })
   end
 
   def test_publish_review_moves_inline_overflow_into_summary_comment
@@ -969,14 +1050,18 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       end
     end
 
-    summary_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments") }
+    summary_call = api_calls.find do |call|
+      Array(call[:args]).include?("--method") && Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments")
+    end
     assert summary_call
     summary_body = JSON.parse(summary_call.fetch(:input)).fetch("body")
     assert_includes summary_body, "#{EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT} anchored inline below."
     assert_includes summary_body, "Additional diff findings"
     assert_includes summary_body, "`infra/main.tf:13`"
 
-    inline_posts = api_calls.count { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/comments") }
+    inline_posts = api_calls.count do |call|
+      Array(call[:args]).include?("--method") && Array(call[:args]).include?("repos/evalops/deploy/pulls/10/comments")
+    end
     assert_equal EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT, inline_posts
   end
 
