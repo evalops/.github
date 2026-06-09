@@ -114,25 +114,27 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       "head" => { "sha" => "head", "ref" => "evalopsbot-review-canary" },
       "base" => { "sha" => "base", "ref" => "main" }
     }
-    api = lambda do |path, **_kwargs|
-      case path
-      when "repos/evalops/.github/pulls?state=open&per_page=100"
-        [pr]
-      when "repos/evalops/.github/pulls/103/files?per_page=100"
-        [{ "filename" => ".github/evalopsbot-canary/review-request.md" }]
-      else
-        flunk "unexpected gh api path #{path}"
-      end
+    list_api = lambda do |path, **_kwargs|
+      flunk "unexpected gh api path #{path}" unless path == "repos/evalops/.github/pulls?state=open&per_page=100"
+      [pr]
+    end
+    # pr_files_metadata reads files via gh_api_paginated_json (gh api --paginate --slurp),
+    # which returns an array of pages; stub it so this test never makes a live API call.
+    files_api = lambda do |path, **_kwargs|
+      flunk "unexpected paginated path #{path}" unless path == "repos/evalops/.github/pulls/103/files?per_page=100"
+      [[{ "filename" => ".github/evalopsbot-canary/review-request.md" }]]
     end
 
-    EvalOpsPrLensReview.stub(:gh_api_json, api) do
-      prs = EvalOpsPrLensReview.discover_open_prs(
-        repos: ["evalops/.github"],
-        pr_filter: { "evalops/.github" => [103] },
-        force_lenses: %w[migration-safety iam-blast-radius]
-      )
+    EvalOpsPrLensReview.stub(:gh_api_json, list_api) do
+      EvalOpsPrLensReview.stub(:gh_api_paginated_json, files_api) do
+        prs = EvalOpsPrLensReview.discover_open_prs(
+          repos: ["evalops/.github"],
+          pr_filter: { "evalops/.github" => [103] },
+          force_lenses: %w[migration-safety iam-blast-radius]
+        )
 
-      assert_equal %w[migration-safety iam-blast-radius], prs.fetch(0).fetch("lenses")
+        assert_equal %w[migration-safety iam-blast-radius], prs.fetch(0).fetch("lenses")
+      end
     end
   end
 
