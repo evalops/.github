@@ -1268,11 +1268,28 @@ module EvalOpsPrLensReview
     ].join("\n")
   end
 
-  # Build the review summary body. `inline_findings` are anchored to the diff as
-  # individual comments; `summary_findings` could not be anchored (their line is
-  # not part of the diff) and are listed here with their path:line instead.
-  def review_summary_body(repo:, pr:, inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
-    total = inline_findings.length + summary_findings.length
+  def append_summary_findings(lines, title, findings, omission_label:)
+    return if findings.empty?
+
+    lines << title
+    findings.first(MAX_FINDINGS_PER_COMMENT).each do |finding|
+      location = finding.fetch("code_location")
+      lines << "- **P#{finding.fetch("priority")} #{format("%.2f", finding.fetch("confidence_score"))} #{finding.fetch("lens")}** `#{location.fetch("path")}:#{location.fetch("line")}`: #{finding.fetch("title")}"
+      lines << "  - #{finding.fetch("body")}"
+    end
+    if findings.length > MAX_FINDINGS_PER_COMMENT
+      lines << "- _#{findings.length - MAX_FINDINGS_PER_COMMENT} additional #{omission_label} omitted; inspect the workflow artifact for the full ledger._"
+    end
+    lines << ""
+  end
+
+  # Build the summary comment body. `inline_findings` are anchored to the diff as
+  # individual comments. If there are more anchorable findings than the inline
+  # comment cap allows, `overflow_inline_findings` are listed in the summary with
+  # their locations. `summary_findings` could not be anchored because their line
+  # is not part of the diff and are also listed here with path:line.
+  def review_summary_body(repo:, pr:, inline_findings:, overflow_inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
+    total = inline_findings.length + overflow_inline_findings.length + summary_findings.length
     lines = [
       MARKER,
       "**EvalOps PR lens review**",
@@ -1287,18 +1304,18 @@ module EvalOpsPrLensReview
       lines << ""
     end
 
-    unless summary_findings.empty?
-      lines << "Findings outside the diff (not inline-anchorable):"
-      summary_findings.first(MAX_FINDINGS_PER_COMMENT).each do |finding|
-        location = finding.fetch("code_location")
-        lines << "- **P#{finding.fetch("priority")} #{format("%.2f", finding.fetch("confidence_score"))} #{finding.fetch("lens")}** `#{location.fetch("path")}:#{location.fetch("line")}`: #{finding.fetch("title")}"
-        lines << "  - #{finding.fetch("body")}"
-      end
-      if summary_findings.length > MAX_FINDINGS_PER_COMMENT
-        lines << "- _#{summary_findings.length - MAX_FINDINGS_PER_COMMENT} additional finding(s) omitted; inspect the workflow artifact for the full ledger._"
-      end
-      lines << ""
-    end
+    append_summary_findings(
+      lines,
+      "Additional diff findings (not posted inline due to the #{MAX_FINDINGS_PER_COMMENT}-comment cap):",
+      overflow_inline_findings,
+      omission_label: "diff finding(s)"
+    )
+    append_summary_findings(
+      lines,
+      "Findings outside the diff (not inline-anchorable):",
+      summary_findings,
+      omission_label: "finding(s)"
+    )
 
     lines << "_Repo: #{repo} PR: ##{pr}_"
     lines.join("\n")
@@ -1339,6 +1356,27 @@ module EvalOpsPrLensReview
     end
   end
 
+  def post_summary_comment(repo:, pr:, body:)
+    gh_api(
+      "--method", "POST", "repos/#{repo}/issues/#{pr}/comments",
+      input: JSON.generate(body: body)
+    )
+  end
+
+  def post_inline_comment(repo:, pr:, head_sha:, finding:)
+    location = finding.fetch("code_location")
+    gh_api(
+      "--method", "POST", "repos/#{repo}/pulls/#{pr}/comments",
+      input: JSON.generate(
+        commit_id: head_sha,
+        path: location.fetch("path"),
+        line: Integer(location.fetch("line")),
+        side: "RIGHT",
+        body: finding_inline_comment_body(finding)
+      )
+    )
+  end
+
   # Remove the bot's prior published artifacts for this PR (marker issue-comment
   # left by the legacy code path, and prior marker inline review comments) so the
   # publication is idempotent across re-runs on the same head.
@@ -1347,42 +1385,34 @@ module EvalOpsPrLensReview
     delete_marker_review_comments(repo: repo, pr: pr)
   end
 
-  # Publish findings as a single PR review: a summary body plus inline comments
+  # Publish findings as a marker summary issue comment plus inline PR comments
   # anchored to each anchorable finding's code_location. Findings whose line is
-  # not in the diff are folded into the summary body. Idempotent: prior marker
-  # comments are deleted first.
+  # not in the diff, or that overflow the inline comment cap, are folded into the
+  # summary body. Idempotent: prior marker comments are deleted first.
   def publish_review(repo:, pr:, head_sha:, inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
     clear_prior_publication(repo: repo, pr: pr)
     return if inline_findings.empty? && summary_findings.empty?
 
-    comments = inline_findings.first(MAX_FINDINGS_PER_COMMENT).map do |finding|
-      location = finding.fetch("code_location")
-      {
-        path: location.fetch("path"),
-        line: Integer(location.fetch("line")),
-        side: "RIGHT",
-        body: finding_inline_comment_body(finding)
-      }
-    end
+    inline_to_publish = inline_findings.first(MAX_FINDINGS_PER_COMMENT)
+    overflow_inline_findings = inline_findings.drop(MAX_FINDINGS_PER_COMMENT)
 
-    payload = {
-      commit_id: head_sha,
-      event: "COMMENT",
+    post_summary_comment(
+      repo: repo,
+      pr: pr,
       body: review_summary_body(
         repo: repo,
         pr: pr,
-        inline_findings: inline_findings,
+        inline_findings: inline_to_publish,
+        overflow_inline_findings: overflow_inline_findings,
         summary_findings: summary_findings,
         comment_min_confidence: comment_min_confidence,
         target_url: target_url
-      ),
-      comments: comments
-    }
-
-    gh_api(
-      "--method", "POST", "repos/#{repo}/pulls/#{pr}/reviews",
-      input: JSON.generate(payload)
+      )
     )
+
+    inline_to_publish.each do |finding|
+      post_inline_comment(repo: repo, pr: pr, head_sha: head_sha, finding: finding)
+    end
   end
 
   def blocking_findings(findings, block_min_confidence:)
@@ -1649,6 +1679,7 @@ if $PROGRAM_NAME == __FILE__
     # single knob and now maps to the *block* threshold. The comment threshold
     # defaults lower so medium-confidence findings are still shown.
     legacy_block = ENV["PR_LENS_MIN_CONFIDENCE"]
+    legacy_block = nil if legacy_block.to_s.empty?
     options = {
       comment_min_confidence: Float(
         ENV.fetch("PR_LENS_COMMENT_MIN_CONFIDENCE", EvalOpsPrLensReview::DEFAULT_COMMENT_MIN_CONFIDENCE)

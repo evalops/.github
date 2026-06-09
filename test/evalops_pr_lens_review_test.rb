@@ -2,6 +2,7 @@
 
 require "json"
 require "minitest/autorun"
+require "open3"
 require "set"
 require "stringio"
 require "tmpdir"
@@ -348,6 +349,7 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       repo: "evalops/deploy",
       pr: 10,
       inline_findings: inline,
+      overflow_inline_findings: [],
       summary_findings: summary,
       comment_min_confidence: 0.55,
       target_url: "https://github.com/evalops/.github/actions/runs/1"
@@ -358,6 +360,41 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     assert_includes body, "1 anchored inline below."
     assert_includes body, "Findings outside the diff"
     assert_includes body, "`infra/old.tf:9`"
+  end
+
+  def test_review_summary_body_lists_inline_overflow_in_summary
+    inline = Array.new(EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT) do |index|
+      finding("Inline #{index}", 0.80, 1, "infra/main.tf", index + 1).merge(
+        "repo" => "evalops/deploy",
+        "pr" => 10,
+        "lens" => "iam-blast-radius",
+        "head_sha" => "abc123",
+        "check_id" => "evalops-pr-lens/iam-blast-radius"
+      )
+    end
+    overflow = [
+      finding("Overflow inline", 0.79, 2, "infra/main.tf", 99).merge(
+        "repo" => "evalops/deploy",
+        "pr" => 10,
+        "lens" => "iam-blast-radius",
+        "head_sha" => "abc123",
+        "check_id" => "evalops-pr-lens/iam-blast-radius"
+      )
+    ]
+
+    body = EvalOpsPrLensReview.review_summary_body(
+      repo: "evalops/deploy",
+      pr: 10,
+      inline_findings: inline,
+      overflow_inline_findings: overflow,
+      summary_findings: [],
+      comment_min_confidence: 0.55,
+      target_url: "https://github.com/evalops/.github/actions/runs/1"
+    )
+
+    assert_includes body, "#{EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT} anchored inline below."
+    assert_includes body, "Additional diff findings"
+    assert_includes body, "`infra/main.tf:99`"
   end
 
   def test_finding_inline_comment_body_carries_marker_and_check
@@ -859,7 +896,7 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     end
   end
 
-  def test_publish_review_posts_pr_review_and_is_idempotent
+  def test_publish_review_posts_summary_comment_and_inline_comments_idempotently
     api_calls = []
     fake_api = lambda do |*args, **kwargs|
       api_calls << { args: args, input: kwargs[:input] }
@@ -889,17 +926,58 @@ class EvalOpsPrLensReviewTest < Minitest::Test
 
     # Prior publication is cleared before posting (idempotency).
     assert_equal({ clear: true }, api_calls.fetch(0))
-    review_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/reviews") }
-    assert review_call
-    payload = JSON.parse(review_call.fetch(:input))
-    assert_equal "COMMENT", payload.fetch("event")
-    assert_equal "abc123", payload.fetch("commit_id")
-    assert_equal 1, payload.fetch("comments").length
-    comment = payload.fetch("comments").fetch(0)
+    summary_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments") }
+    assert summary_call
+    summary_payload = JSON.parse(summary_call.fetch(:input))
+    assert_includes summary_payload.fetch("body"), EvalOpsPrLensReview::MARKER
+
+    comment_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/comments") }
+    assert comment_call
+    comment = JSON.parse(comment_call.fetch(:input))
+    assert_equal "abc123", comment.fetch("commit_id")
     assert_equal "infra/main.tf", comment.fetch("path")
     assert_equal 22, comment.fetch("line")
     assert_equal "RIGHT", comment.fetch("side")
     assert_includes comment.fetch("body"), EvalOpsPrLensReview::MARKER
+    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/reviews") })
+  end
+
+  def test_publish_review_moves_inline_overflow_into_summary_comment
+    api_calls = []
+    fake_api = lambda do |*args, **kwargs|
+      api_calls << { args: args, input: kwargs[:input] }
+      ""
+    end
+    inline = Array.new(EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT + 1) do |index|
+      finding("Inline #{index}", 0.9, 1, "infra/main.tf", index + 1).merge(
+        "lens" => "iam-blast-radius",
+        "check_id" => "evalops-pr-lens/iam-blast-radius"
+      )
+    end
+
+    EvalOpsPrLensReview.stub(:clear_prior_publication, ->(**_kwargs) {}) do
+      EvalOpsPrLensReview.stub(:gh_api, fake_api) do
+        EvalOpsPrLensReview.publish_review(
+          repo: "evalops/deploy",
+          pr: 10,
+          head_sha: "abc123",
+          inline_findings: inline,
+          summary_findings: [],
+          comment_min_confidence: 0.55,
+          target_url: "https://github.com/evalops/.github/actions/runs/1"
+        )
+      end
+    end
+
+    summary_call = api_calls.find { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments") }
+    assert summary_call
+    summary_body = JSON.parse(summary_call.fetch(:input)).fetch("body")
+    assert_includes summary_body, "#{EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT} anchored inline below."
+    assert_includes summary_body, "Additional diff findings"
+    assert_includes summary_body, "`infra/main.tf:13`"
+
+    inline_posts = api_calls.count { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/comments") }
+    assert_equal EvalOpsPrLensReview::MAX_FINDINGS_PER_COMMENT, inline_posts
   end
 
   def test_publish_review_clears_prior_then_skips_post_when_no_findings
@@ -954,6 +1032,30 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     # At the legacy 0.82 it would not block; the new 0.55 comment default still shows it.
     assert_equal "success", EvalOpsPrLensReview.meta_state(findings, block_min_confidence: 0.82)
     assert_equal "failure", EvalOpsPrLensReview.meta_state(findings, block_min_confidence: 0.65)
+  end
+
+  def test_meta_review_cli_ignores_empty_legacy_block_env
+    Dir.mktmpdir do |dir|
+      output = File.join(dir, "meta-review.json")
+      script = File.expand_path("../.github/scripts/evalops-pr-lens-review.rb", __dir__)
+      stdout, stderr, status = Open3.capture3(
+        {
+          "PR_LENS_MIN_CONFIDENCE" => "",
+          "PR_LENS_BLOCK_MIN_CONFIDENCE" => nil
+        },
+        "ruby",
+        script,
+        "meta-review",
+        "--artifact-root",
+        dir,
+        "--output",
+        output
+      )
+
+      assert status.success?, "#{stdout}\n#{stderr}"
+      result = JSON.parse(File.read(output))
+      assert_equal EvalOpsPrLensReview::DEFAULT_BLOCK_MIN_CONFIDENCE, result.fetch("block_min_confidence")
+    end
   end
 
   private
