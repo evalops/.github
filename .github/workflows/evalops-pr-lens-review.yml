@@ -16,9 +16,17 @@ on:
         required: false
         default: ""
       min_confidence:
-        description: "Minimum confidence for PR comment publication"
+        description: "Deprecated alias for block_min_confidence (kept for back-compat)"
         required: false
-        default: "0.82"
+        default: ""
+      comment_min_confidence:
+        description: "Minimum confidence for surfacing a finding (inline or summary)"
+        required: false
+        default: "0.55"
+      block_min_confidence:
+        description: "Minimum confidence for a P0/P1 finding to fail the meta-review status"
+        required: false
+        default: "0.80"
       model:
         description: "Model for lens reviewers"
         required: false
@@ -309,7 +317,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.EVALOPS_PR_LENS_TOKEN || secrets.EVALOPS_REVIEW_GUARD_TOKEN }}
-      PR_LENS_MIN_CONFIDENCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.min_confidence || inputs.min_confidence || '0.82' }}
+      # Back-compat alias: PR_LENS_MIN_CONFIDENCE maps to the block threshold.
+      PR_LENS_MIN_CONFIDENCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.min_confidence || inputs.min_confidence || '' }}
+      PR_LENS_COMMENT_MIN_CONFIDENCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_min_confidence || inputs.comment_min_confidence || '0.55' }}
+      PR_LENS_BLOCK_MIN_CONFIDENCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.block_min_confidence || inputs.block_min_confidence || '0.80' }}
       PR_LENS_APP_REPOSITORIES: ".github,platform,deploy,maestro-internal,maestro,ensemble,diffscope,chat,cerebro"
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -351,15 +362,23 @@ jobs:
             exit 2
           fi
 
-      - name: Publish high-confidence findings
+      - name: Publish findings as inline PR review
         shell: bash
         run: |
           set -euo pipefail
-          ruby .github/scripts/evalops-pr-lens-review.rb meta-review \
-            --artifact-root artifacts \
-            --min-confidence "${PR_LENS_MIN_CONFIDENCE}" \
-            --output meta-review.json \
+          args=(
+            meta-review
+            --artifact-root artifacts
+            --comment-min-confidence "${PR_LENS_COMMENT_MIN_CONFIDENCE}"
+            --block-min-confidence "${PR_LENS_BLOCK_MIN_CONFIDENCE}"
+            --output meta-review.json
             --markdown-output "${GITHUB_STEP_SUMMARY}"
+          )
+          # Back-compat: a non-empty legacy min_confidence overrides the block threshold.
+          if [ -n "${PR_LENS_MIN_CONFIDENCE}" ]; then
+            args+=(--min-confidence "${PR_LENS_MIN_CONFIDENCE}")
+          fi
+          ruby .github/scripts/evalops-pr-lens-review.rb "${args[@]}"
 
       - name: Upload meta review ledger
         uses: actions/upload-artifact@v4
