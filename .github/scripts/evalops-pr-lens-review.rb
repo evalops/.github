@@ -9,6 +9,7 @@ require "net/http"
 require "openssl"
 require "open3"
 require "optparse"
+require "set"
 require "time"
 require "uri"
 require "yaml"
@@ -123,7 +124,15 @@ module EvalOpsPrLensReview
   MARKER = "<!-- evalops-pr-lens-review -->"
   REVIEW_REQUESTED_DISPATCH_EVENT = "evalopsbot-review-requested"
   REVIEW_REQUESTED_DISPATCH_SOURCE = "evalopsbot-review-request-dispatch"
-  DEFAULT_MIN_CONFIDENCE = 0.82
+  # Findings at or above this confidence are surfaced to humans (inline or in the
+  # review summary). Lower than the historical 0.82 so real medium-confidence
+  # findings stop getting silently discarded.
+  DEFAULT_COMMENT_MIN_CONFIDENCE = 0.55
+  # Only P0/P1 findings at or above this confidence flip the meta-review status to
+  # failure. Showing a finding and blocking on it are now separate decisions.
+  DEFAULT_BLOCK_MIN_CONFIDENCE = 0.80
+  # Back-compat: the single legacy knob now maps to the block threshold.
+  DEFAULT_MIN_CONFIDENCE = DEFAULT_BLOCK_MIN_CONFIDENCE
   DEFAULT_MODEL = "claude-opus-4-7"
   DEFAULT_PROVIDER = "anthropic"
   DEFAULT_MAX_DIFF_BYTES = 180_000
@@ -422,6 +431,60 @@ module EvalOpsPrLensReview
 
   def pr_files_metadata(repo:, pr:)
     gh_api_json("repos/#{repo}/pulls/#{pr}/files?per_page=100")
+  end
+
+  # Parse a single file's unified-diff patch (as returned by the GitHub files API)
+  # into the set of right-side (head) line numbers that an inline review comment
+  # may anchor to. GitHub only accepts inline comments on added or context lines
+  # that are part of the diff; commenting elsewhere returns HTTP 422.
+  def addable_lines_from_patch(patch)
+    lines = Set.new
+    right_line = nil
+    patch.to_s.each_line do |raw|
+      line = raw.chomp
+      if (match = line.match(/\A@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/))
+        right_line = Integer(match[1])
+        next
+      end
+      next if right_line.nil?
+
+      case line[0]
+      when "+"
+        lines << right_line
+        right_line += 1
+      when " ", ""
+        # Context line counts on the right side but is not itself an addition.
+        right_line += 1
+      when "-"
+        # Deletion only advances the left side.
+      when "\\"
+        # "\ No newline at end of file" marker; does not advance either side.
+      else
+        right_line += 1
+      end
+    end
+    lines
+  end
+
+  # Map of head-side path => Set of addable line numbers for the PR diff. Used to
+  # decide which findings can be posted as inline review comments versus folded
+  # into the review summary body.
+  def addable_lines_by_path(repo:, pr:, files: nil)
+    files ||= pr_files_metadata(repo: repo, pr: pr)
+    Array(files).each_with_object({}) do |file, map|
+      path = file["filename"].to_s
+      next if path.empty?
+
+      map[path] = addable_lines_from_patch(file["patch"])
+    end
+  end
+
+  def finding_inline_anchorable?(finding, addable_by_path)
+    location = finding.fetch("code_location")
+    addable = addable_by_path[location.fetch("path")]
+    return false if addable.nil?
+
+    addable.include?(Integer(location.fetch("line")))
   end
 
   def discover_open_prs(repos:, pr_filter: nil, force_lenses: nil)
@@ -963,12 +1026,36 @@ module EvalOpsPrLensReview
         "line" => Integer(line)
       }
     }
-  rescue ArgumentError, KeyError, TypeError
-    nil
+  rescue ArgumentError, KeyError, TypeError => e
+    raise DroppedFinding, e.message
+  end
+
+  # Raised by normalize_finding when a malformed finding cannot be normalized,
+  # so the caller can count and log the drop instead of silently swallowing it.
+  class DroppedFinding < StandardError; end
+
+  def normalize_findings_with_drops(raw_findings, repo:, pr:, lens:)
+    dropped = 0
+    findings = Array(raw_findings).each_with_index.filter_map do |finding, index|
+      normalize_finding(finding)
+    rescue DroppedFinding => e
+      dropped += 1
+      warn(
+        "pr-lens: dropped malformed finding ##{index} from #{repo}##{pr} #{lens}: " \
+        "#{e.message.lines.first.to_s.strip}"
+      )
+      nil
+    end
+    [findings, dropped]
   end
 
   def normalize_lens_review(raw_review, repo:, pr:, lens:, head_sha:)
-    findings = Array(raw_review["findings"]).map { |finding| normalize_finding(finding) }.compact
+    findings, dropped = normalize_findings_with_drops(
+      raw_review["findings"],
+      repo: repo,
+      pr: pr,
+      lens: lens
+    )
     top_confidence = findings.map { |finding| finding.fetch("confidence_score") }.max || 0.0
     confidence = coerce_number(
       raw_review.fetch("confidence_score", top_confidence),
@@ -987,6 +1074,7 @@ module EvalOpsPrLensReview
       "generated_at" => Time.now.utc.iso8601,
       "summary" => raw_review.fetch("summary", "").to_s.strip,
       "confidence_score" => confidence,
+      "dropped_findings" => dropped,
       "findings" => findings
     }
   end
@@ -1169,27 +1257,46 @@ module EvalOpsPrLensReview
     "#{server}/#{repo}/actions/runs/#{run_id}"
   end
 
-  def comment_body(repo:, pr:, findings:, min_confidence:, target_url:)
+  def finding_inline_comment_body(finding)
+    [
+      MARKER,
+      "**P#{finding.fetch("priority")} · #{format("%.2f", finding.fetch("confidence_score"))} · #{finding.fetch("lens")}**: #{finding.fetch("title")}",
+      "",
+      finding.fetch("body"),
+      "",
+      "_Check: `#{finding.fetch("check_id")}`_"
+    ].join("\n")
+  end
+
+  # Build the review summary body. `inline_findings` are anchored to the diff as
+  # individual comments; `summary_findings` could not be anchored (their line is
+  # not part of the diff) and are listed here with their path:line instead.
+  def review_summary_body(repo:, pr:, inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
+    total = inline_findings.length + summary_findings.length
     lines = [
       MARKER,
       "**EvalOps PR lens review**",
       "",
-      "High-confidence findings only. Threshold: #{format("%.2f", min_confidence)}.",
+      "#{total} finding#{total == 1 ? "" : "s"} ≥ #{format("%.2f", comment_min_confidence)} confidence.",
       "Run: #{target_url || "unavailable"}",
       ""
     ]
 
-    findings.first(MAX_FINDINGS_PER_COMMENT).each_with_index do |finding, index|
-      location = finding.fetch("code_location")
-      lines << "#{index + 1}. **P#{finding.fetch("priority")} #{format("%.2f", finding.fetch("confidence_score"))} #{finding.fetch("lens")}**: #{finding.fetch("title")}"
-      lines << "   - Location: `#{location.fetch("path")}:#{location.fetch("line")}`"
-      lines << "   - Check: `#{finding.fetch("check_id")}`"
-      lines << "   - #{finding.fetch("body")}"
+    unless inline_findings.empty?
+      lines << "#{inline_findings.length} anchored inline below."
       lines << ""
     end
 
-    if findings.length > MAX_FINDINGS_PER_COMMENT
-      lines << "_#{findings.length - MAX_FINDINGS_PER_COMMENT} additional high-confidence finding(s) were omitted from the comment; inspect the workflow artifact for the full ledger._"
+    unless summary_findings.empty?
+      lines << "Findings outside the diff (not inline-anchorable):"
+      summary_findings.first(MAX_FINDINGS_PER_COMMENT).each do |finding|
+        location = finding.fetch("code_location")
+        lines << "- **P#{finding.fetch("priority")} #{format("%.2f", finding.fetch("confidence_score"))} #{finding.fetch("lens")}** `#{location.fetch("path")}:#{location.fetch("line")}`: #{finding.fetch("title")}"
+        lines << "  - #{finding.fetch("body")}"
+      end
+      if summary_findings.length > MAX_FINDINGS_PER_COMMENT
+        lines << "- _#{summary_findings.length - MAX_FINDINGS_PER_COMMENT} additional finding(s) omitted; inspect the workflow artifact for the full ledger._"
+      end
       lines << ""
     end
 
@@ -1207,54 +1314,111 @@ module EvalOpsPrLensReview
     raw.lines.map(&:strip).reject(&:empty?)
   end
 
-  def upsert_comment(repo:, pr:, body:)
-    ids = marker_comment_ids(repo: repo, pr: pr)
-    if ids.empty?
-      gh_api(
-        "--method", "POST", "repos/#{repo}/issues/#{pr}/comments",
-        input: JSON.generate({ body: body })
-      )
-    else
-      first, *stale = ids
-      gh_api(
-        "--method", "PATCH", "repos/#{repo}/issues/comments/#{first}",
-        input: JSON.generate({ body: body })
-      )
-      stale.each { |id| gh_api("--method", "DELETE", "repos/#{repo}/issues/comments/#{id}") }
-    end
-  end
-
   def delete_marker_comments(repo:, pr:)
     marker_comment_ids(repo: repo, pr: pr).each do |id|
       gh_api("--method", "DELETE", "repos/#{repo}/issues/comments/#{id}")
     end
   end
 
-  def meta_state(findings, coverage_incomplete: false)
-    return "error" if coverage_incomplete
-
-    findings.any? { |finding| finding.fetch("priority") <= 1 } ? "failure" : "success"
+  # Prior bot inline review comments carrying the marker, on this PR. Deleted
+  # before a fresh review is posted so re-running on the same head replaces
+  # rather than duplicates.
+  def marker_review_comment_ids(repo:, pr:)
+    raw = gh_api(
+      "--paginate",
+      "repos/#{repo}/pulls/#{pr}/comments",
+      "--jq",
+      ".[] | select(.body | contains(\"#{MARKER}\")) | .id"
+    )
+    raw.lines.map(&:strip).reject(&:empty?)
   end
 
-  def meta_description(findings, missing_count: 0, skipped_count: 0)
-    if missing_count.positive?
-      "PR lens coverage incomplete: #{missing_count} missing"
-    elsif findings.empty? && skipped_count.positive?
-      "No findings; #{skipped_count} lens review#{skipped_count == 1 ? "" : "s"} skipped"
-    elsif findings.empty?
-      "No high-confidence PR lens findings"
-    else
-      "#{findings.length} high-confidence finding#{findings.length == 1 ? "" : "s"}"
+  def delete_marker_review_comments(repo:, pr:)
+    marker_review_comment_ids(repo: repo, pr: pr).each do |id|
+      gh_api("--method", "DELETE", "repos/#{repo}/pulls/comments/#{id}")
     end
   end
 
-  def meta_review(artifact_root:, min_confidence:, output:)
+  # Remove the bot's prior published artifacts for this PR (marker issue-comment
+  # left by the legacy code path, and prior marker inline review comments) so the
+  # publication is idempotent across re-runs on the same head.
+  def clear_prior_publication(repo:, pr:)
+    delete_marker_comments(repo: repo, pr: pr)
+    delete_marker_review_comments(repo: repo, pr: pr)
+  end
+
+  # Publish findings as a single PR review: a summary body plus inline comments
+  # anchored to each anchorable finding's code_location. Findings whose line is
+  # not in the diff are folded into the summary body. Idempotent: prior marker
+  # comments are deleted first.
+  def publish_review(repo:, pr:, head_sha:, inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
+    clear_prior_publication(repo: repo, pr: pr)
+    return if inline_findings.empty? && summary_findings.empty?
+
+    comments = inline_findings.first(MAX_FINDINGS_PER_COMMENT).map do |finding|
+      location = finding.fetch("code_location")
+      {
+        path: location.fetch("path"),
+        line: Integer(location.fetch("line")),
+        side: "RIGHT",
+        body: finding_inline_comment_body(finding)
+      }
+    end
+
+    payload = {
+      commit_id: head_sha,
+      event: "COMMENT",
+      body: review_summary_body(
+        repo: repo,
+        pr: pr,
+        inline_findings: inline_findings,
+        summary_findings: summary_findings,
+        comment_min_confidence: comment_min_confidence,
+        target_url: target_url
+      ),
+      comments: comments
+    }
+
+    gh_api(
+      "--method", "POST", "repos/#{repo}/pulls/#{pr}/reviews",
+      input: JSON.generate(payload)
+    )
+  end
+
+  def blocking_findings(findings, block_min_confidence:)
+    findings.select do |finding|
+      finding.fetch("priority") <= 1 &&
+        finding.fetch("confidence_score") >= block_min_confidence
+    end
+  end
+
+  def meta_state(findings, block_min_confidence:, coverage_incomplete: false)
+    return "error" if coverage_incomplete
+
+    blocking_findings(findings, block_min_confidence: block_min_confidence).any? ? "failure" : "success"
+  end
+
+  def meta_description(findings, lens_count:, comment_min_confidence:, missing_count: 0, skipped_count: 0)
+    confidence_label = format("%.2f", comment_min_confidence)
+    lens_label = "#{lens_count} lens#{lens_count == 1 ? "" : "es"}"
+
+    if missing_count.positive?
+      "PR lens coverage incomplete: #{missing_count} missing"
+    elsif findings.empty?
+      base = "#{lens_label} · 0 findings ≥ #{confidence_label}"
+      skipped_count.positive? ? "#{base} (#{skipped_count} skipped)" : base
+    else
+      "#{lens_label} · #{findings.length} finding#{findings.length == 1 ? "" : "s"} ≥ #{confidence_label}"
+    end
+  end
+
+  def meta_review(artifact_root:, comment_min_confidence:, block_min_confidence:, output:)
     reviews = read_lens_reviews(artifact_root)
     expected_reviews = read_expected_reviews(artifact_root)
     reviews_by_key = reviews.each_with_object({}) do |review, hash|
       hash[[review.fetch("repo"), Integer(review.fetch("pr")), review.fetch("lens"), review.fetch("head_sha")]] = review
     end
-    ranked = dedupe_and_rank(high_confidence_findings(reviews, min_confidence: min_confidence))
+    ranked = dedupe_and_rank(high_confidence_findings(reviews, min_confidence: comment_min_confidence))
     grouped = grouped_by_pr(ranked)
     target_url = run_url
     coverage_by_pr = {}
@@ -1285,22 +1449,38 @@ module EvalOpsPrLensReview
           "lenses" => reviews.select { |review| review.fetch("repo") == repo && review.fetch("pr") == pr && review.fetch("head_sha") == head_sha }.map { |review| review.fetch("lens") }.sort
         }
       )
+
       if findings.empty?
-        delete_marker_comments(repo: repo, pr: pr)
+        clear_prior_publication(repo: repo, pr: pr)
       else
-        upsert_comment(
+        addable_by_path = addable_lines_by_path(repo: repo, pr: pr)
+        inline_findings, summary_findings = findings.partition do |finding|
+          finding_inline_anchorable?(finding, addable_by_path)
+        end
+        publish_review(
           repo: repo,
           pr: pr,
-          body: comment_body(repo: repo, pr: pr, findings: findings, min_confidence: min_confidence, target_url: target_url)
+          head_sha: head_sha,
+          inline_findings: inline_findings,
+          summary_findings: summary_findings,
+          comment_min_confidence: comment_min_confidence,
+          target_url: target_url
         )
       end
+
       post_status(
         repo: repo,
         sha: head_sha,
         context: meta_context,
-        state: meta_state(findings, coverage_incomplete: coverage.fetch("missing").positive?),
+        state: meta_state(
+          findings,
+          block_min_confidence: block_min_confidence,
+          coverage_incomplete: coverage.fetch("missing").positive?
+        ),
         description: meta_description(
           findings,
+          lens_count: Array(coverage.fetch("lenses", [])).length,
+          comment_min_confidence: comment_min_confidence,
           missing_count: coverage.fetch("missing"),
           skipped_count: coverage.fetch("skipped")
         ),
@@ -1311,13 +1491,16 @@ module EvalOpsPrLensReview
     result = {
       "schema_version" => 1,
       "generated_at" => Time.now.utc.iso8601,
-      "min_confidence" => min_confidence,
+      "comment_min_confidence" => comment_min_confidence,
+      "block_min_confidence" => block_min_confidence,
       "reviews" => reviews.length,
       "expected_reviews" => expected_reviews.length,
+      "dropped_findings" => reviews.sum { |review| Integer(review.fetch("dropped_findings", 0)) },
       "coverage" => coverage_by_pr.map do |(repo, pr, head_sha), coverage|
         coverage.merge("repo" => repo, "pr" => pr, "head_sha" => head_sha)
       end,
       "published_findings" => ranked,
+      "blocking_findings" => blocking_findings(ranked, block_min_confidence: block_min_confidence),
       "run_url" => target_url
     }
     File.write(output, JSON.pretty_generate(result))
@@ -1325,12 +1508,16 @@ module EvalOpsPrLensReview
   end
 
   def markdown_meta_report(result)
+    comment_threshold = format("%.2f", result.fetch("comment_min_confidence", DEFAULT_COMMENT_MIN_CONFIDENCE))
+    block_threshold = format("%.2f", result.fetch("block_min_confidence", DEFAULT_BLOCK_MIN_CONFIDENCE))
     lines = [
       "## EvalOps PR Lens Review",
       "",
       "- Reviews: #{result.fetch("reviews")}",
       "- Expected reviews: #{result.fetch("expected_reviews")}",
-      "- Published findings: #{result.fetch("published_findings").length}",
+      "- Comment threshold: #{comment_threshold} · Block threshold: #{block_threshold}",
+      "- Published findings: #{result.fetch("published_findings").length} (#{result.fetch("blocking_findings", []).length} blocking)",
+      "- Dropped malformed findings: #{result.fetch("dropped_findings", 0)}",
       "- Run: #{result.fetch("run_url") || "unavailable"}",
       "",
       "### Coverage"
@@ -1340,7 +1527,7 @@ module EvalOpsPrLensReview
     end
     if result.fetch("published_findings", []).empty?
       lines << ""
-      lines << "No high-confidence findings cleared the publication threshold."
+      lines << "No findings cleared the comment threshold (#{comment_threshold})."
     else
       lines << ""
       lines << "### Findings"
@@ -1458,22 +1645,40 @@ if $PROGRAM_NAME == __FILE__
     review = JSON.parse(File.read(options.fetch(:review_json)))
     puts EvalOpsPrLensReview.lens_status_description(review)
   when "meta-review"
+    # Back-compat: PR_LENS_MIN_CONFIDENCE (and --min-confidence) is the legacy
+    # single knob and now maps to the *block* threshold. The comment threshold
+    # defaults lower so medium-confidence findings are still shown.
+    legacy_block = ENV["PR_LENS_MIN_CONFIDENCE"]
     options = {
-      min_confidence: Float(ENV.fetch("PR_LENS_MIN_CONFIDENCE", EvalOpsPrLensReview::DEFAULT_MIN_CONFIDENCE)),
+      comment_min_confidence: Float(
+        ENV.fetch("PR_LENS_COMMENT_MIN_CONFIDENCE", EvalOpsPrLensReview::DEFAULT_COMMENT_MIN_CONFIDENCE)
+      ),
+      block_min_confidence: Float(
+        ENV.fetch(
+          "PR_LENS_BLOCK_MIN_CONFIDENCE",
+          legacy_block || EvalOpsPrLensReview::DEFAULT_BLOCK_MIN_CONFIDENCE
+        )
+      ),
       output: "meta-review.json"
     }
+    markdown_output = nil
     OptionParser.new do |parser|
       parser.on("--artifact-root PATH") { |value| options[:artifact_root] = value }
-      parser.on("--min-confidence NUMBER", Float) { |value| options[:min_confidence] = value }
+      parser.on("--comment-min-confidence NUMBER", Float) { |value| options[:comment_min_confidence] = value }
+      parser.on("--block-min-confidence NUMBER", Float) { |value| options[:block_min_confidence] = value }
+      # Legacy alias: sets the block threshold.
+      parser.on("--min-confidence NUMBER", Float) { |value| options[:block_min_confidence] = value }
       parser.on("--output PATH") { |value| options[:output] = value }
-      parser.on("--markdown-output PATH") { |value| options[:markdown_output] = value }
+      parser.on("--markdown-output PATH") { |value| markdown_output = value }
     end.parse!
     raise OptionParser::MissingArgument, "artifact-root" if options[:artifact_root].to_s.empty?
 
-    markdown_output = options.delete(:markdown_output)
     result = EvalOpsPrLensReview.meta_review(**options)
     File.write(markdown_output, EvalOpsPrLensReview.markdown_meta_report(result)) if markdown_output
-    puts "Published #{result.fetch("published_findings").length} high-confidence finding(s)."
+    puts(
+      "Published #{result.fetch("published_findings").length} finding(s) " \
+      "(#{result.fetch("blocking_findings").length} blocking)."
+    )
   when "dispatch-review-requests"
     options = {
       owner: "evalops",
