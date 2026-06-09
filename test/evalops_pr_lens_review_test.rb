@@ -841,27 +841,77 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       addable = { "infra/main.tf" => [22].to_set, "infra/old.tf" => [].to_set }
 
       EvalOpsPrLensReview.stub(:run_url, "https://github.com/evalops/.github/actions/runs/1") do
-        EvalOpsPrLensReview.stub(:addable_lines_by_path, ->(**_kwargs) { addable }) do
-          EvalOpsPrLensReview.stub(:publish_review, ->(**kwargs) { published << kwargs }) do
-            EvalOpsPrLensReview.stub(:post_status, ->(**kwargs) { statuses << kwargs }) do
-              result = EvalOpsPrLensReview.meta_review(
-                artifact_root: dir,
-                comment_min_confidence: 0.55,
-                block_min_confidence: 0.80,
-                output: File.join(dir, "meta-review.json")
-              )
+        EvalOpsPrLensReview.stub(:pr_head_sha, ->(**_kwargs) { "abc123" }) do
+          EvalOpsPrLensReview.stub(:addable_lines_by_path, ->(**_kwargs) { addable }) do
+            EvalOpsPrLensReview.stub(:publish_review, ->(**kwargs) { published << kwargs }) do
+              EvalOpsPrLensReview.stub(:post_status, ->(**kwargs) { statuses << kwargs }) do
+                result = EvalOpsPrLensReview.meta_review(
+                  artifact_root: dir,
+                  comment_min_confidence: 0.55,
+                  block_min_confidence: 0.80,
+                  output: File.join(dir, "meta-review.json")
+                )
 
-              # Both findings clear the 0.55 comment threshold.
-              assert_equal 2, result.fetch("published_findings").length
-              # Only the P1 @ 0.91 clears the 0.80 block threshold.
-              assert_equal 1, result.fetch("blocking_findings").length
+                # Both findings clear the 0.55 comment threshold.
+                assert_equal 2, result.fetch("published_findings").length
+                # Only the P1 @ 0.91 clears the 0.80 block threshold.
+                assert_equal 1, result.fetch("blocking_findings").length
 
-              call = published.fetch(0)
-              assert_equal ["Inline blocking defect"], call.fetch(:inline_findings).map { |f| f.fetch("title") }
-              assert_equal ["Off-diff medium defect"], call.fetch(:summary_findings).map { |f| f.fetch("title") }
-              assert_equal "abc123", call.fetch(:head_sha)
+                call = published.fetch(0)
+                assert_equal ["Inline blocking defect"], call.fetch(:inline_findings).map { |f| f.fetch("title") }
+                assert_equal ["Off-diff medium defect"], call.fetch(:summary_findings).map { |f| f.fetch("title") }
+                assert_equal "abc123", call.fetch(:head_sha)
 
-              assert_equal "failure", statuses.fetch(0).fetch(:state)
+                assert_equal "failure", statuses.fetch(0).fetch(:state)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def test_meta_review_disables_inline_publication_when_pr_head_has_advanced
+    Dir.mktmpdir do |dir|
+      review_dir = File.join(dir, "pr-lens-evalops-deploy-10-iam-blast-radius")
+      FileUtils.mkdir_p(review_dir)
+      File.write(
+        File.join(review_dir, "lens-review.json"),
+        JSON.pretty_generate(
+          {
+            "schema_version" => 1,
+            "repo" => "evalops/deploy",
+            "pr" => 10,
+            "lens" => "iam-blast-radius",
+            "check_id" => "evalops-pr-lens/iam-blast-radius",
+            "head_sha" => "abc123",
+            "dropped_findings" => 0,
+            "findings" => [finding("Inline defect", 0.91, 1, "infra/main.tf", 22)]
+          }
+        )
+      )
+
+      published = []
+
+      EvalOpsPrLensReview.stub(:run_url, "https://github.com/evalops/.github/actions/runs/1") do
+        EvalOpsPrLensReview.stub(:pr_head_sha, ->(**_kwargs) { "def456" }) do
+          EvalOpsPrLensReview.stub(:addable_lines_by_path, ->(**_kwargs) { flunk "unexpected live diff lookup" }) do
+            EvalOpsPrLensReview.stub(:publish_review, ->(**kwargs) { published << kwargs }) do
+              EvalOpsPrLensReview.stub(:post_status, ->(**_kwargs) {}) do
+                warnings = capture_warnings do
+                  EvalOpsPrLensReview.meta_review(
+                    artifact_root: dir,
+                    comment_min_confidence: 0.55,
+                    block_min_confidence: 0.80,
+                    output: File.join(dir, "meta-review.json")
+                  )
+                end
+
+                call = published.fetch(0)
+                assert_empty call.fetch(:inline_findings)
+                assert_equal ["Inline defect"], call.fetch(:summary_findings).map { |finding| finding.fetch("title") }
+                assert(warnings.any? { |line| line.include?("skipping inline publication") })
+              end
             end
           end
         end
@@ -972,7 +1022,7 @@ class EvalOpsPrLensReviewTest < Minitest::Test
     refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/10/reviews") })
   end
 
-  def test_publish_review_rolls_back_partial_inline_publication_without_deleting_prior_comments
+  def test_publish_review_falls_back_to_summary_when_inline_publication_fails
     api_calls = []
     inline_posts = 0
     inline = 2.times.map do |index|
@@ -1000,7 +1050,7 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       end
     end
 
-    error = assert_raises(RuntimeError) do
+    warnings = capture_warnings do
       EvalOpsPrLensReview.stub(:gh_api, fake_api) do
         EvalOpsPrLensReview.publish_review(
           repo: "evalops/deploy",
@@ -1014,13 +1064,18 @@ class EvalOpsPrLensReviewTest < Minitest::Test
       end
     end
 
-    assert_equal "inline publish failed", error.message
-    refute(api_calls.any? do |call|
+    summary_call = api_calls.find do |call|
       Array(call[:args]).include?("--method") && Array(call[:args]).include?("repos/evalops/deploy/issues/10/comments")
-    end)
+    end
+    assert summary_call
+    summary_body = JSON.parse(summary_call.fetch(:input)).fetch("body")
+    assert_includes summary_body, "Diff findings (inline publication failed, so listed here):"
+    assert_includes summary_body, "`infra/main.tf:1`"
+    assert_includes summary_body, "`infra/main.tf:2`"
+    assert(warnings.any? { |line| line.include?("publishing summary only") })
     assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/444") })
-    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/comments/111") })
-    refute(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/222") })
+    assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/issues/comments/111") })
+    assert(api_calls.any? { |call| Array(call[:args]).include?("repos/evalops/deploy/pulls/comments/222") })
   end
 
   def test_publish_review_moves_inline_overflow_into_summary_comment

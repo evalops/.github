@@ -1293,10 +1293,21 @@ module EvalOpsPrLensReview
   # Build the summary comment body. `inline_findings` are anchored to the diff as
   # individual comments. If there are more anchorable findings than the inline
   # comment cap allows, `overflow_inline_findings` are listed in the summary with
-  # their locations. `summary_findings` could not be anchored because their line
-  # is not part of the diff and are also listed here with path:line.
-  def review_summary_body(repo:, pr:, inline_findings:, overflow_inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
-    total = inline_findings.length + overflow_inline_findings.length + summary_findings.length
+  # their locations. `failed_inline_findings` are diff findings listed here when
+  # inline publication fails after selection. `summary_findings` could not be
+  # anchored because their line is not part of the diff and are also listed here
+  # with path:line.
+  def review_summary_body(
+    repo:,
+    pr:,
+    inline_findings:,
+    overflow_inline_findings:,
+    summary_findings:,
+    comment_min_confidence:,
+    target_url:,
+    failed_inline_findings: []
+  )
+    total = inline_findings.length + overflow_inline_findings.length + summary_findings.length + failed_inline_findings.length
     lines = [
       MARKER,
       "**EvalOps PR lens review**",
@@ -1311,6 +1322,12 @@ module EvalOpsPrLensReview
       lines << ""
     end
 
+    append_summary_findings(
+      lines,
+      "Diff findings (inline publication failed, so listed here):",
+      failed_inline_findings,
+      omission_label: "diff finding(s)"
+    )
     append_summary_findings(
       lines,
       "Additional diff findings (not posted inline due to the #{MAX_FINDINGS_PER_COMMENT}-comment cap):",
@@ -1404,7 +1421,9 @@ module EvalOpsPrLensReview
   # not in the diff, or that overflow the inline comment cap, are folded into the
   # summary body. Prior marker comments are deleted only after the replacement
   # publication succeeds so a partial API failure does not leave a misleading
-  # summary or erase the prior review.
+  # summary or erase the prior review. If inline publication fails after findings
+  # are selected, the script falls back to a summary-only publication so off-diff
+  # and overflow findings are still published for the run.
   def publish_review(repo:, pr:, head_sha:, inline_findings:, summary_findings:, comment_min_confidence:, target_url:)
     if inline_findings.empty? && summary_findings.empty?
       clear_prior_publication(repo: repo, pr: pr)
@@ -1417,10 +1436,28 @@ module EvalOpsPrLensReview
     prior_inline_ids = marker_review_comment_ids(repo: repo, pr: pr)
     published_inline_ids = []
     published_summary_id = nil
+    failed_inline_findings = []
 
-    inline_to_publish.each do |finding|
-      response = post_inline_comment(repo: repo, pr: pr, head_sha: head_sha, finding: finding)
-      published_inline_ids << response["id"] if response && response["id"]
+    begin
+      inline_to_publish.each do |finding|
+        response = post_inline_comment(repo: repo, pr: pr, head_sha: head_sha, finding: finding)
+        published_inline_ids << response["id"] if response && response["id"]
+      end
+    rescue StandardError => e
+      rollback_publication(
+        repo: repo,
+        pr: pr,
+        summary_comment_id: nil,
+        inline_comment_ids: published_inline_ids
+      )
+      warn(
+        "pr-lens: inline publication failed for #{repo}##{pr} @ #{head_sha}; " \
+        "publishing summary only: #{e.message.lines.first.to_s.strip}"
+      )
+      failed_inline_findings = inline_to_publish + overflow_inline_findings
+      inline_to_publish = []
+      overflow_inline_findings = []
+      published_inline_ids = []
     end
 
     published_summary_id = post_summary_comment(
@@ -1433,7 +1470,8 @@ module EvalOpsPrLensReview
         overflow_inline_findings: overflow_inline_findings,
         summary_findings: summary_findings,
         comment_min_confidence: comment_min_confidence,
-        target_url: target_url
+        target_url: target_url,
+        failed_inline_findings: failed_inline_findings
       )
     )
     published_summary_id = published_summary_id["id"] if published_summary_id
@@ -1517,9 +1555,19 @@ module EvalOpsPrLensReview
       if findings.empty?
         clear_prior_publication(repo: repo, pr: pr)
       else
-        addable_by_path = addable_lines_by_path(repo: repo, pr: pr)
-        inline_findings, summary_findings = findings.partition do |finding|
-          finding_inline_anchorable?(finding, addable_by_path)
+        current_head_sha = pr_head_sha(repo: repo, pr: pr)
+        if current_head_sha != head_sha
+          warn(
+            "pr-lens: skipping inline publication for #{repo}##{pr} because PR head advanced " \
+            "from #{head_sha} to #{current_head_sha}"
+          )
+          inline_findings = []
+          summary_findings = findings
+        else
+          addable_by_path = addable_lines_by_path(repo: repo, pr: pr)
+          inline_findings, summary_findings = findings.partition do |finding|
+            finding_inline_anchorable?(finding, addable_by_path)
+          end
         end
         publish_review(
           repo: repo,
