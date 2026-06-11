@@ -2,44 +2,36 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in any EvalOps repository, please report it responsibly.
+If you discover a security vulnerability in any EvalOps repository, please
+report it responsibly.
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+Do not open a public GitHub issue, pull request, or discussion for security
+vulnerabilities.
 
 Instead, email **security@evalops.dev** with:
 
 - A description of the vulnerability
 - Steps to reproduce
 - The affected service(s) and version(s)
-- Any potential impact assessment
+- Potential impact
+- Any proof-of-concept code, logs, or screenshots that are safe to share
 
-We will acknowledge receipt within 48 hours and provide an initial assessment within 5 business days.
+We will acknowledge receipt within 48 hours and provide an initial assessment
+within 5 business days.
 
 ## Supported Versions
 
-We support security patches for the latest release of each actively maintained service.
+We support security patches for the latest release of each actively maintained
+service. Archived, experimental, or retired repositories may receive fixes only
+when they affect an active EvalOps service.
 
 ## Scope
 
-This policy applies to all repositories in the [evalops](https://github.com/evalops) GitHub organization.
+This policy applies to repositories in the
+[evalops](https://github.com/evalops) GitHub organization.
 
-## Code Scanning
+## Coordinated Disclosure
 
-EvalOps does not use GitHub CodeQL or GitHub default code scanning. Every
-repository is attached to the **EvalOps security baseline recommended** code security
-configuration (`id=245233`), which sets `advanced_security:
-secret_protection` and `code_scanning_default_setup: disabled`, and is the
-default for new repositories.
-
-Security signal should come from bounded, owned checks:
-
-- `semgrep`-based custom rules in service repos (see `.semgrep/` directories
-  and the `semgrep-custom` workflows).
-- Service-specific gates such as `architecture-review`, `contract-skew-check`,
-  and `migration-check` in `evalops/platform`.
-- Secret scanning, Dependabot, and targeted repository-owned analyzers with
-  explicit owners and runtime budgets.
-
-Do not add CodeQL workflows, generated default-setup workflows, or required
-checks backed by blanket code scanning. To request a policy change, open a PR
-against this file and the engineering-practices contract.
+Please give us a reasonable opportunity to investigate and remediate before
+public disclosure. We will keep reporters updated as we validate impact, prepare
+fixes, and coordinate release timing.

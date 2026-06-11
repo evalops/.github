@@ -1,25 +1,30 @@
 # evalops/.github
 
-Public organization defaults for EvalOps. This repository hosts the
-organization profile and a set of operating-convention documents.
+Public organization profile and community health files for EvalOps.
+
+This repository is intentionally small. Internal org automation, reusable
+workflows, helper scripts, service catalogs, guardrails, and operating contracts
+belong in the private `evalops/.github-private` repository.
 
 ## What Lives Here
 
 | Path | Purpose |
 |---|---|
 | `profile/README.md` | The public organization profile shown on github.com/evalops. |
-| `profile/*.md` | EvalOps operating-convention notes (engineering practices, archival runbook, Codex workflow notes, tooling standards). |
 | `SECURITY.md` | How to report a vulnerability in an EvalOps repository. |
+| `SUPPORT.md` | Where to ask for help or route non-security contact. |
 
-## Org Automation
+## Maintainer Notes
 
-The org automation engine (review pipeline, guardrail workflows, helper
-scripts, contracts, and the service catalog) lives in the private repository
-`evalops/.github-private`. It was moved out of this public repository to reduce
-public exposure of internal operational detail. Maintainers with access work in
-`evalops/.github-private`.
+Do not add workflows, issue templates, pull request templates, service catalogs,
+guardrail scripts, internal runbooks, or org automation here. Maintainers with
+access should make those changes in `evalops/.github-private`.
+
+Keep public content limited to what an external reader needs to understand
+EvalOps, contact the team, or report a security issue.
 
 ## Security
 
 See [`SECURITY.md`](SECURITY.md) to report a vulnerability. Report to
-security@evalops.dev; do not open a public issue.
+security@evalops.dev; do not disclose vulnerabilities publicly before
+coordinated remediation.
