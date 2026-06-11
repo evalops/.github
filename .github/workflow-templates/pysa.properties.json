@@ -1,9 +1,0 @@
-{
-  "name": "Pysa static analysis",
-  "description": "Run Pyre/Pysa taint analysis for Python repositories.",
-  "iconName": "octicon shield-check",
-  "categories": [
-    "Security",
-    "Continuous integration"
-  ]
-}

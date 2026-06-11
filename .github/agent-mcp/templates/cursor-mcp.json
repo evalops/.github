@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "evalops": {
-      "type": "http",
-      "url": "https://mcp.evalops.dev/mcp"
-    }
-  }
-}
