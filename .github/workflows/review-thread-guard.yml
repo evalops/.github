@@ -1,11 +1,11 @@
 name: review-thread-guard
 
-# Produces the `unresolved-review-threads` check, which is a required status
-# check on evalops/maestro-internal main. It runs on the caller's runner, so it
-# may only depend on tools present on both the Hetzner VM image and the ARC
-# container image. The guard used to shell out to Ruby; ARC ships no Ruby, so
-# the guard now runs on python3 (standard library only) with an explicit
-# preflight and a fixture self-test that proves the gate can still fail.
+# Produces the `unresolved-review-threads` check, which callers wire up as a
+# required status check on protected branches. It runs on the caller's runner,
+# so it may only depend on tools present on every runner image we operate. The
+# guard used to shell out to Ruby; the ARC image ships no Ruby, so it now runs
+# on python3 (standard library only) with an explicit preflight and a fixture
+# self-test that proves the gate can still fail.
 
 on:
   workflow_call:

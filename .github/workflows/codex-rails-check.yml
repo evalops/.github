@@ -1,10 +1,10 @@
 name: codex-rails-check
 
-# Reusable org rails check. Called by cerebro, chat, deploy, finance, maestro,
-# maestro-internal and platform. Runs on whatever runner the caller names, so it
-# may only depend on tools proven to exist on both the Hetzner VM image and the
-# ARC container image. Ruby exists on the former and not the latter, so every
-# parse step below runs on python3 + PyYAML, asserted up front by the preflight.
+# Reusable org rails check, called by repositories across the organisation.
+# It runs on whatever runner the caller names, so it may only depend on tools
+# proven to exist on every runner image we operate. Ruby exists on the older
+# self-hosted image and not on the ARC image, so every parse step below runs on
+# python3 + PyYAML, asserted up front by the preflight.
 
 on:
   pull_request:
