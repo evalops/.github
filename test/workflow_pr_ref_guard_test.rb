@@ -59,22 +59,33 @@ class WorkflowPrRefGuardTest < Minitest::Test
     )
   end
 
-  def test_agent_authorship_sets_up_pinned_ruby_before_classification
+  def test_agent_authorship_classification_runs_on_python3_without_ruby
     workflow = YAML.safe_load(
       File.read(File.join(root, ".github", "workflows", "agent-authorship-label.yml")),
       aliases: true,
     )
     steps = workflow.fetch("jobs").fetch("label").fetch("steps")
-    setup_index = steps.index { |step| step["name"] == "Set up Ruby" }
+
+    setup_ruby = steps.select { |step| step["uses"].to_s.include?("ruby/setup-ruby") }
+    assert_empty(
+      setup_ruby,
+      "Ruby is absent from newer runner images; the classifier must run on python3, not a live Ruby install.",
+    )
+
+    preflight_index = steps.index { |step| step["name"] == "Preflight the classification toolchain" }
     classify_index = steps.index { |step| step["name"] == "Classify authorship" }
 
-    refute_nil setup_index, "The reusable workflow must provision Ruby on minimal ARC runners."
+    refute_nil preflight_index, "The reusable workflow must assert python3 exists before relying on it."
     refute_nil classify_index
-    assert_operator setup_index, :<, classify_index
+    assert_operator preflight_index, :<, classify_index
 
-    setup = steps.fetch(setup_index)
-    assert_match(%r{\Aruby/setup-ruby@[0-9a-f]{40}\z}, setup.fetch("uses"))
-    assert_match(/\A\d+\.\d+\.\d+\z/, setup.fetch("with").fetch("ruby-version"))
+    preflight_run = steps.fetch(preflight_index).fetch("run")
+    assert_includes preflight_run, "command -v python3"
+
+    classify_run = steps.fetch(classify_index).fetch("run")
+    assert_includes classify_run, "python3"
+    assert_includes classify_run, "classify_agent_authorship.py"
+    refute_includes classify_run, "ruby "
   end
 
   private

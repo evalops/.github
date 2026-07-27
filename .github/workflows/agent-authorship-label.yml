@@ -1,5 +1,12 @@
 name: agent-authorship-label
 
+# Reusable org authorship labeler, called by repositories across the
+# organisation. It runs on whatever runner the caller names, so it may only
+# depend on tools proven to exist on every runner image we operate. Ruby is
+# absent from newer images (fleet-wide `ruby: command not found`, see
+# evalops/platform#5205), so the classifier runs on python3, asserted up
+# front by the preflight.
+
 on:
   workflow_call:
     inputs:
@@ -36,10 +43,16 @@ jobs:
           ref: ${{ inputs.helper_ref }}
           path: org-defaults
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
-        with:
-          ruby-version: "3.3.9"
+      - name: Preflight the classification toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::error::python3 is not on this runner (${RUNNER_NAME:-unknown}). agent-authorship-label cannot classify commits without it."
+            exit 1
+          fi
+          python3 -V
 
       - name: Resolve pull request
         id: pr
@@ -70,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ruby org-defaults/.github/scripts/classify-agent-authorship.rb \
+          python3 org-defaults/.github/scripts/classify_agent_authorship.py \
             --github-output "${GITHUB_OUTPUT}" \
             commits.jsonl
 
