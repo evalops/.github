@@ -41,7 +41,10 @@ def read_input(paths):
 
 def extract_messages(text):
     messages = []
-    for line in text.splitlines():
+    # Split only on "\n" to match Ruby's each_line: jq emits characters like
+    # U+2028/U+2029 literally inside JSON strings, and str.splitlines() would
+    # tear one JSON record into unparseable fragments.
+    for line in text.split("\n"):
         if not line.strip():
             continue
         parsed = json.loads(line)
@@ -72,7 +75,11 @@ def main():
     incomplete_commits = 0
 
     for message in messages:
-        lines = message.splitlines(keepends=True)
+        # Ruby each_line splits on "\n" only; keep that exact segmentation.
+        parts = message.split("\n")
+        lines = [part + "\n" for part in parts[:-1]]
+        if parts[-1]:
+            lines.append(parts[-1])
         has_marker = any(MARKER_PATTERN.search(line) for line in lines)
 
         if not has_marker:
