@@ -20,7 +20,7 @@ on:
         default: "high"
         type: string
       runner_label:
-        description: "Runner label used for the validation job (owned private-CI ARC; never blacksmith-* or ubuntu-latest)"
+        description: "Runner label used for the validation job (owned private-CI ARC only)"
         required: false
         type: string
         default: evalops-private-ci
