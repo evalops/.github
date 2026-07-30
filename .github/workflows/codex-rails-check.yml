@@ -27,17 +27,17 @@ on:
         type: boolean
         default: false
       runner_label:
-        description: "Runner label used for the validation job"
+        description: "Runner label used for the validation job (owned private-CI ARC only)"
         required: false
         type: string
-        default: ubuntu-latest
+        default: evalops-private-ci
 
 permissions:
   contents: read
 
 jobs:
   validate:
-    runs-on: ${{ inputs.runner_label || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.runner_label || 'evalops-private-ci' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
