@@ -20,10 +20,10 @@ on:
         default: "high"
         type: string
       runner_label:
-        description: "Runner label used for the validation job"
+        description: "Runner label used for the validation job (owned private-CI ARC; never blacksmith-* or ubuntu-latest)"
         required: false
         type: string
-        default: ubuntu-latest
+        default: evalops-private-ci
       guard_ref:
         description: "evalops/.github ref to checkout for guard scripts"
         required: false
@@ -68,7 +68,7 @@ permissions:
 
 jobs:
   unresolved-review-threads:
-    runs-on: ${{ inputs.runner_label || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.runner_label || 'evalops-private-ci' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5

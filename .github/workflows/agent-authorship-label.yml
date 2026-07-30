@@ -19,7 +19,7 @@ on:
         description: "Runner label used for the label job"
         required: false
         type: string
-        default: ubuntu-latest
+        default: evalops-private-ci
       helper_ref:
         description: "evalops/.github ref used to checkout helper scripts"
         required: false
